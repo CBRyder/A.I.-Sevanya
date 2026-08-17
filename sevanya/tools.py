@@ -61,6 +61,30 @@ TOOLS = [
         },
     },
     {
+            "name": "grep",
+            "description": (
+                "Search for text across files in the user's project. Use this when"
+                "you need to find where something lives - a function, a variable, a "
+                "string - and you don't already know which file it'sin. Prefer this "
+                "over reading files one at a time to hunt for something,"
+            ),
+            "input_Schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Text to search for, e.g. 'MAX_STEPS' ",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search, relative to the project root. "
+                        "Omit to search the whole project.",
+                    },
+                },
+                "required": ["pattern"],
+            },
+    },
+    {
         "name": "remember",
         "description": (
             "Record something worth carrying into future sessions: a concept "
