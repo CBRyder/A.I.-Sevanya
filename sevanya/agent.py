@@ -28,10 +28,14 @@ class Agent:
         store: Store,
         conversation_id: int,
         client: anthropic.Anthropic | None = None,
+        system_extra: str = "",
     ):
         self.client = client or anthropic.Anthropic()
         self.store = store
         self.conversation_id = conversation_id
+        # Extra instructions for this agent only — the voice endpoint uses it
+        # to ask for short spoken answers without forking the whole prompt.
+        self.system_extra = system_extra
 
         # The conversation. The API is stateless — the model remembers nothing
         # between calls — so this list *is* Sevanya's memory of the session,
@@ -52,11 +56,12 @@ class Agent:
         looking for — which is the right default, since old notes shouldn't
         crowd the context window forever.
         """
+        prompt = SYSTEM + self.system_extra
         recent = self.store.recent_journal(limit=5)
         if not recent:
-            return SYSTEM
+            return prompt
         lines = "\n".join(f"- [{r['topic']}] {r['note']}" for r in reversed(recent))
-        return f"{SYSTEM}\n\nFrom your journal, most recent last:\n{lines}\n"
+        return f"{prompt}\n\nFrom your journal, most recent last:\n{lines}\n"
 
     def send(self, user_text: str) -> str:
         """Send one user message, run any tools it triggers, return the reply."""
@@ -107,6 +112,63 @@ class Agent:
             self._record("user", results)
 
         return "(gave up after too many tool calls — something's looping)"
+
+    def stream(self, user_text: str):
+        """Same loop as send(), but yields as it goes instead of at the end.
+
+        Yields (kind, payload) pairs:
+            ("text", chunk)  a piece of the reply, as the model produces it
+            ("tool", name)   a tool is about to run
+
+        The web UI uses this so you can watch it work. Siri uses send()
+        instead, because a Shortcut can't consume a stream — it makes one
+        request and waits for one answer.
+        """
+        self._record("user", user_text)
+
+        for _ in range(MAX_STEPS):
+            with self.client.messages.stream(
+                model=MODEL,
+                max_tokens=16000,
+                system=self._system(),
+                tools=tools.TOOLS,
+                thinking={"type": "adaptive"},
+                messages=self.messages,
+            ) as stream:
+                # text_stream yields only visible text — thinking and tool_use
+                # blocks are accumulated but not emitted here.
+                for chunk in stream.text_stream:
+                    yield ("text", chunk)
+                response = stream.get_final_message()
+
+            self._record("assistant", response.content)
+
+            if response.stop_reason != "tool_use":
+                return
+
+            results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                yield ("tool", block.name)
+                output, is_error = tools.dispatch(
+                    block.name,
+                    block.input,
+                    store=self.store,
+                    conversation_id=self.conversation_id,
+                )
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": output,
+                        "is_error": is_error,
+                    }
+                )
+
+            self._record("user", results)
+
+        yield ("text", "\n(gave up after too many tool calls — something's looping)")
 
     def _record(self, role: str, content) -> None:
         """Append to the in-memory transcript and to disk, together.

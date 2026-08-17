@@ -8,13 +8,14 @@ structural, not a promise in a prompt.
 
 ## Status
 
-**Stage 2 — conversations persist and it keeps a journal.**
+**Stage 3 — HTTP server, web UI, ready for the phone.**
 
 | | |
 |---|---|
 | 1 | Agent loop + tools, terminal ✅ |
 | 2 | SQLite persistence + learning journal ✅ |
-| 3 | FastAPI — `/chat` (SSE, web UI) + `/ask` (blocking, for Siri) |
+| — | grep tool (mine) ✅ |
+| 3 | FastAPI — `/api/chat` (SSE) + `/api/ask` (blocking, Siri) ✅ |
 | 4 | Tailscale + iOS Shortcut → "Hey Siri, ask Sevanya…" |
 | 5 | Expo Go client, if the PWA isn't enough |
 | 6 | Local model via LM Studio, teaching modes |
@@ -38,11 +39,33 @@ python -m sevanya.main --list   # what have I got
 python -m sevanya.main --id 7   # jump to one
 ```
 
+## Server (for the phone)
+
+```powershell
+$env:SEVANYA_TOKEN = "some-long-random-string"   # optional but do it
+python -m sevanya.server
+```
+
+Then `http://localhost:8765` in a browser, or `http://<tailscale-name>:8765`
+from my phone. Add to Home Screen for the app-like version.
+
+If a token is set, the web UI needs it once from the browser console:
+`localStorage.token = 'same-string'`
+
+| endpoint | for | shape |
+|---|---|---|
+| `POST /api/chat` | web UI | SSE, streams as it thinks |
+| `POST /api/ask` | Siri Shortcut | blocking, one blob of text |
+| `GET /api/conversations` | both | recent threads |
+| `GET /api/conversations/{id}` | both | readable transcript |
+
 ## Layout
 
 ```
 sevanya/
-  agent.py    the loop — model call, tool dispatch, repeat
+  agent.py    the loop — send() blocks, stream() yields
+  server.py   FastAPI: /api/chat (SSE) + /api/ask (Siri)
+  web/        single-page UI, installable to the iPhone home screen
   tools.py    what it's allowed to do (note what's absent)
   store.py    SQLite: conversations, messages, journal
   prompt.py   the teaching contract
@@ -66,3 +89,9 @@ sevanya/
   can't find what I'm referring to it asks, rather than guessing.
 - `MAX_STEPS` in `agent.py` caps tool calls per turn. If it trips, something
   is looping.
+- `Store` opens **one connection per thread** — the web server runs requests in
+  a threadpool and SQLite connections can't cross threads. Don't "simplify" it
+  back to a single shared connection.
+- `/api/chat` with no `conversation_id` starts a **new** thread, not the latest.
+  Latest would drop me into whatever Siri last asked. The browser remembers its
+  own id in localStorage.

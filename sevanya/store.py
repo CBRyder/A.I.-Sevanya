@@ -14,6 +14,7 @@ It gets written by Sevanya itself through the `remember` tool, not by a script.
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 # Lives in your home directory, not the project — Sevanya follows you across
@@ -106,13 +107,37 @@ def _window(text: str, query: str, pad: int = 120) -> str | None:
 
 
 class Store:
+    """One SQLite connection per thread.
+
+    SQLite connections are bound to the thread that opened them — hand one to
+    another thread and it raises. The terminal REPL is single-threaded so this
+    never mattered, but the web server runs each request in a threadpool, so a
+    single shared connection breaks the moment two requests overlap.
+
+    `self.db` is a property that hands back this thread's connection, creating
+    it on first use. Every method below is unchanged as a result.
+    """
+
     def __init__(self, path: Path = DB_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys = ON")
+        self._path = path
+        self._local = threading.local()
+        # Create the schema once, on whichever thread built the Store.
         self.db.executescript(SCHEMA)
         self.db.commit()
+
+    @property
+    def db(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            # timeout: wait rather than erroring if another thread is mid-write.
+            conn = sqlite3.connect(self._path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            # WAL lets readers work while a writer holds the file.
+            conn.execute("PRAGMA journal_mode = WAL")
+            self._local.conn = conn
+        return conn
 
     # --- conversations ------------------------------------------------------
 
@@ -234,4 +259,8 @@ class Store:
         ).fetchall()
 
     def close(self) -> None:
-        self.db.close()
+        """Close this thread's connection. Other threads keep their own."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
