@@ -60,6 +60,50 @@ TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "remember",
+        "description": (
+            "Record something worth carrying into future sessions: a concept "
+            "the user just got, a mistake they've now made twice, a project "
+            "they're working on, a preference they stated. Write the note for "
+            "your future self — enough context to be useful in three weeks. "
+            "Use this sparingly and only for things that will still matter "
+            "later; a log of everything is a log of nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Short tag for searching later, e.g. 'python/decorators' or 'project/sevanya'",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "What happened and why it's worth remembering.",
+                },
+            },
+            "required": ["topic", "note"],
+        },
+    },
+    {
+        "name": "recall",
+        "description": (
+            "Search your journal from previous sessions. Use this when the "
+            "user refers to something you've discussed before, when a topic "
+            "feels familiar, or before explaining a concept from scratch — "
+            "they may have already covered it with you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Substring to match against topics and notes.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -110,14 +154,38 @@ def list_files(path: str = ".") -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
+# --- journal tools ----------------------------------------------------------
+#
+# Note that these *do* write — but they write Sevanya's own notes, never your
+# source. The no-writing-your-code rule is intact.
+
+
+def remember(topic: str, note: str, *, store, conversation_id) -> str:
+    store.remember(topic, note, conversation_id)
+    return f"noted under '{topic}'"
+
+
+def recall(query: str, *, store, conversation_id) -> str:
+    rows = store.recall(query)
+    if not rows:
+        return f"nothing in the journal matching {query!r}"
+    return "\n".join(f"[{r['created_at']}] {r['topic']}: {r['note']}" for r in rows)
+
+
 # Maps the name the model uses to the function we actually call.
 REGISTRY = {
     "read_file": read_file,
     "list_files": list_files,
+    "remember": remember,
+    "recall": recall,
 }
 
+# Tools needing access to the journal. Listed explicitly rather than inspected
+# at runtime — you can see at a glance which tools touch persistent state.
+NEEDS_STORE = {"remember", "recall"}
 
-def dispatch(name: str, arguments: dict) -> tuple[str, bool]:
+
+def dispatch(name: str, arguments: dict, *, store=None, conversation_id=None) -> tuple[str, bool]:
     """Run one tool call. Returns (result_text, is_error).
 
     Errors are caught and returned as text rather than raised. That's
@@ -127,7 +195,14 @@ def dispatch(name: str, arguments: dict) -> tuple[str, bool]:
     func = REGISTRY.get(name)
     if func is None:
         return f"unknown tool: {name}", True
+
+    extra = {}
+    if name in NEEDS_STORE:
+        if store is None:
+            return f"{name} is unavailable (no journal in this session)", True
+        extra = {"store": store, "conversation_id": conversation_id}
+
     try:
-        return func(**arguments), False
+        return func(**arguments, **extra), False
     except Exception as exc:
         return f"{type(exc).__name__}: {exc}", True

@@ -8,16 +8,16 @@ structural, not a promise in a prompt.
 
 ## Status
 
-**Stage 1 — terminal agent loop.** Working. Reads files, answers questions, no
-persistence yet.
+**Stage 2 — conversations persist and it keeps a journal.**
 
 | | |
 |---|---|
 | 1 | Agent loop + tools, terminal ✅ |
-| 2 | SQLite persistence + learning journal |
-| 3 | FastAPI + web UI + streaming |
-| 4 | Tailscale, phone access |
-| 5 | Teaching modes, sharper tools |
+| 2 | SQLite persistence + learning journal ✅ |
+| 3 | FastAPI — `/chat` (SSE, web UI) + `/ask` (blocking, for Siri) |
+| 4 | Tailscale + iOS Shortcut → "Hey Siri, ask Sevanya…" |
+| 5 | Expo Go client, if the PWA isn't enough |
+| 6 | Local model via LM Studio, teaching modes |
 
 ## Setup
 
@@ -32,7 +32,10 @@ export ANTHROPIC_API_KEY=sk-ant-...   # Windows: set ANTHROPIC_API_KEY=...
 Run it from the directory you want it to be able to read:
 
 ```bash
-python -m sevanya.main
+python -m sevanya.main          # resume where I left off
+python -m sevanya.main --new    # fresh conversation
+python -m sevanya.main --list   # what have I got
+python -m sevanya.main --id 7   # jump to one
 ```
 
 ## Layout
@@ -41,6 +44,7 @@ python -m sevanya.main
 sevanya/
   agent.py    the loop — model call, tool dispatch, repeat
   tools.py    what it's allowed to do (note what's absent)
+  store.py    SQLite: conversations, messages, journal
   prompt.py   the teaching contract
   main.py     terminal REPL
 ```
@@ -49,7 +53,11 @@ sevanya/
 
 - `PROJECT_ROOT` is the directory you launch from. Nothing outside it is
   readable — `tools._resolve` enforces that.
-- The conversation lives in `Agent.messages` and dies with the process.
-  That's stage 2.
+- Memory lives in `~/.sevanya/sevanya.db`, **not** in the repo — it follows me
+  across projects. Back it up; it's the part that isn't replaceable.
+- Message content is stored as JSON blocks, not text, so `tool_use` survives a
+  reload. See the comment on `store._jsonable` before "simplifying" it.
+- The journal is written by Sevanya via `remember`, not by me. Five most recent
+  notes get injected into the system prompt; older ones it has to `recall`.
 - `MAX_STEPS` in `agent.py` caps tool calls per turn. If it trips, something
   is looping.
