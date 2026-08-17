@@ -77,6 +77,34 @@ def _jsonable(content):
     return out
 
 
+def _readable(content) -> str:
+    """Pull human text out of stored content, skipping tool plumbing.
+
+    tool_result blocks are deliberately excluded: they hold whole files
+    Sevanya read, and matching your search term inside someone's source dump
+    is noise, not recall.
+    """
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            parts.append(block["text"])
+    return "\n".join(parts)
+
+
+def _window(text: str, query: str, pad: int = 120) -> str | None:
+    """A slice of `text` around the first case-insensitive hit on `query`."""
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        return None
+    start, end = max(0, idx - pad), min(len(text), idx + len(query) + pad)
+    excerpt = text[start:end].replace("\n", " ").strip()
+    return ("…" if start else "") + excerpt + ("…" if end < len(text) else "")
+
+
 class Store:
     def __init__(self, path: Path = DB_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +184,48 @@ class Store:
                ORDER BY created_at DESC LIMIT ?""",
             (like, like, limit),
         ).fetchall()
+
+    def search_messages(self, query: str, limit: int = 6) -> list[dict]:
+        """Substring search across past conversations.
+
+        The journal is what Sevanya chose to write down; this is everything
+        else. Most of what you'll want to refer back to ("that parser bug")
+        never got a journal entry — it's just sitting in a transcript.
+
+        Two filters keep the results useful rather than overwhelming:
+        tool_result blocks are skipped (they're full file contents, and
+        matching inside them tells you nothing), and each hit is trimmed to a
+        window around the match instead of returning the whole message.
+        """
+        rows = self.db.execute(
+            """SELECT m.conversation_id, m.role, m.content, m.created_at,
+                      c.title
+               FROM messages m JOIN conversations c ON c.id = m.conversation_id
+               WHERE m.content LIKE ?
+               ORDER BY m.id DESC LIMIT ?""",
+            (f"%{query}%", limit * 4),  # over-fetch; filtering drops some
+        ).fetchall()
+
+        hits = []
+        for row in rows:
+            text = _readable(json.loads(row["content"]))
+            if not text:
+                continue
+            window = _window(text, query)
+            if window is None:
+                continue  # matched only inside JSON scaffolding, not real text
+            hits.append(
+                {
+                    "conversation_id": row["conversation_id"],
+                    "title": row["title"],
+                    "role": row["role"],
+                    "when": row["created_at"],
+                    "excerpt": window,
+                }
+            )
+            if len(hits) >= limit:
+                break
+        return hits
 
     def recent_journal(self, limit: int = 5) -> list[sqlite3.Row]:
         return self.db.execute(

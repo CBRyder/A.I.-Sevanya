@@ -59,5 +59,10 @@ sevanya/
   reload. See the comment on `store._jsonable` before "simplifying" it.
 - The journal is written by Sevanya via `remember`, not by me. Five most recent
   notes get injected into the system prompt; older ones it has to `recall`.
+- `recall` searches the journal **and** past conversation text. Tool results are
+  excluded — they're file dumps, and matching inside them is noise.
+- **Thread policy:** every Siri request starts a fresh conversation. Continuity
+  comes from `recall` searching history, not from carrying a transcript. If it
+  can't find what I'm referring to it asks, rather than guessing.
 - `MAX_STEPS` in `agent.py` caps tool calls per turn. If it trips, something
   is looping.

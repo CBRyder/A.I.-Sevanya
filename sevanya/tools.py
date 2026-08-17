@@ -88,17 +88,21 @@ TOOLS = [
     {
         "name": "recall",
         "description": (
-            "Search your journal from previous sessions. Use this when the "
-            "user refers to something you've discussed before, when a topic "
-            "feels familiar, or before explaining a concept from scratch — "
-            "they may have already covered it with you."
+            "Search everything from previous sessions — both your journal "
+            "notes and the text of past conversations. Use this whenever the "
+            "user refers to something as though you should already know it "
+            "('that bug from yesterday', 'the thing we tried'), or before "
+            "explaining a concept from scratch, since they may have already "
+            "covered it with you. Try a couple of different search terms "
+            "before concluding there's nothing there — matching is literal, "
+            "so the word they just used may not be the word they used then."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Substring to match against topics and notes.",
+                    "description": "A distinctive word or phrase to match. Prefer specific terms over common ones.",
                 }
             },
             "required": ["query"],
@@ -166,10 +170,35 @@ def remember(topic: str, note: str, *, store, conversation_id) -> str:
 
 
 def recall(query: str, *, store, conversation_id) -> str:
-    rows = store.recall(query)
-    if not rows:
-        return f"nothing in the journal matching {query!r}"
-    return "\n".join(f"[{r['created_at']}] {r['topic']}: {r['note']}" for r in rows)
+    """Search the journal and past conversations together.
+
+    One tool rather than two, so the model never has to guess which kind of
+    memory a question belongs to. Journal notes come first — they're curated,
+    so they're higher signal than raw transcript.
+    """
+    notes = store.recall(query)
+    hits = store.search_messages(query)
+
+    if not notes and not hits:
+        # Say plainly that nothing was found. A vague answer here invites the
+        # model to fill the gap with a plausible guess, which is the exact
+        # failure we want: better to come back and ask what was meant.
+        return (
+            f"No journal notes or past messages match {query!r}. "
+            f"Either it wasn't discussed, or it was described differently — "
+            f"try another term, or ask the user what they're referring to."
+        )
+
+    out = []
+    if notes:
+        out.append("Journal notes:")
+        out += [f"  [{r['created_at']}] {r['topic']}: {r['note']}" for r in notes]
+    if hits:
+        out.append("From past conversations:")
+        for h in hits:
+            title = h["title"] or f"conversation {h['conversation_id']}"
+            out.append(f"  [{h['when']}] {h['role']} in '{title}': {h['excerpt']}")
+    return "\n".join(out)
 
 
 # Maps the name the model uses to the function we actually call.
