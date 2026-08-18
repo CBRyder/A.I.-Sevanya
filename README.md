@@ -16,6 +16,7 @@ structural, not a promise in a prompt.
 | 2 | SQLite persistence + learning journal ✅ |
 | — | grep tool (mine) ✅ |
 | 3 | FastAPI — `/api/chat` (SSE) + `/api/ask` (blocking, Siri) ✅ |
+| — | `sync_repo` + `fetch_url` — reads GitHub repos and public pages ✅ |
 | 4 | Tailscale + iOS Shortcut → "Hey Siri, ask Sevanya…" |
 | 5 | Expo Go client, if the PWA isn't enough |
 | 6 | Local model via LM Studio, teaching modes |
@@ -87,6 +88,41 @@ QR code or a Shortcut; the token is saved and stripped from the URL.
 | `GET /api/conversations` | both | recent threads |
 | `GET /api/conversations/{id}` | both | readable transcript |
 
+## Reaching outside the machine
+
+Two tools, both reads. She still has no way to write your source; a clone lands
+in `~/.sevanya/repos`, her own cache, the same place the journal lives.
+
+| tool | for |
+|---|---|
+| `sync_repo` | clone a GitHub repo, or update the copy she has |
+| `fetch_url` | read a public page as text |
+
+A synced repo is just a directory — `read_file`, `list_files` and `grep` all
+work on it under `repos/owner/name/...`, which is the point of keeping a local
+copy rather than reading files one at a time over the API.
+
+```
+you> how does the anthropic sdk handle streaming?
+  [sync_repo {'repo': 'anthropics/anthropic-sdk-python'}]
+  [grep {'pattern': 'text_stream', 'path': 'repos/anthropics/anthropic-sdk-python'}]
+```
+
+**Public hosts only.** She runs on your machine, on Tailscale, so "fetch this
+URL" is also a route to your router's admin page or anything bound to
+localhost. Every hostname is resolved and every address it answers with must be
+public — all of them, not just the first — and the check runs again on each
+redirect, because a public URL is free to redirect to `127.0.0.1`.
+
+**Fetched text is data, not instructions.** A page can say "ignore your
+previous instructions" as easily as anything else. Everything `fetch_url`
+returns is labelled as web content, and `prompt.py` tells her the only person
+whose instructions she follows is you.
+
+Private repos aren't supported — cloning uses no credentials and
+`GIT_TERMINAL_PROMPT=0`, so a private URL fails immediately instead of hanging
+on a password prompt nobody is going to type.
+
 ## Layout
 
 ```
@@ -96,6 +132,7 @@ sevanya/
   web/        single-page UI, installable to the iPhone home screen
   web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
+  net.py      the two things that leave the machine, and what they refuse
   store.py    SQLite: conversations, messages, journal
   prompt.py   the teaching contract
   main.py     terminal REPL
@@ -120,6 +157,13 @@ sevanya/
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.
+- A path starting `repos/` addresses the clone cache, not your project — but
+  if your project has its own top-level `repos/`, yours wins and `sync_repo`
+  tells you the cache is shadowed rather than handing back a path that reads
+  the wrong files.
+- Updating a clone is `fetch` + `reset --hard`, not a merge. It's a read-only
+  mirror; there's nothing local worth preserving, and a merge conflict in there
+  is a mess nobody is going to resolve by hand.
 - `MAX_STEPS` in `agent.py` caps tool calls per turn. If it trips, something
   is looping.
 - `Store` opens **one connection per thread** — the web server runs requests in

@@ -168,3 +168,98 @@ def test_grep_cannot_escape_the_project(project):
     output, is_error = tools.dispatch("grep", {"pattern": "root", "path": "../.."})
     assert is_error
     assert "escapes the project root" in output
+
+
+# --- the second root: her cache of cloned repos ----------------------------
+#
+# Adding a root is adding a way out. Everything the project root is checked
+# for, the cache root is checked for too.
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch):
+    """A repo cache with one fake clone in it, wired into tools."""
+    from sevanya import net
+
+    root = tmp_path / "cache"
+    (root / "owner" / "name").mkdir(parents=True)
+    (root / "owner" / "name" / "lib.py").write_text("def widget():\n    return 42\n")
+    monkeypatch.setattr(tools, "REPO_ROOT", root)
+    monkeypatch.setattr(net, "REPO_CACHE", root)
+    return root
+
+
+def test_a_cloned_repo_reads_like_any_other_directory(project, cache):
+    assert "def widget()" in tools.read_file("repos/owner/name/lib.py")
+    assert "lib.py" in tools.list_files("repos/owner/name")
+
+
+def test_grep_works_across_a_cloned_repo(project, cache):
+    out = tools.grep("widget", "repos/owner/name")
+    assert "repos/owner/name/lib.py:1:" in out
+
+
+def test_paths_reported_from_the_cache_can_be_read_back(project, cache):
+    """Whatever grep prints has to be a path read_file accepts.
+
+    If the label and the addressable path differ, the model has to translate
+    between them, and it will eventually get it wrong.
+    """
+    line = tools.grep("widget", "repos/owner/name").splitlines()[0]
+    path = line.split(":")[0]
+    assert "def widget()" in tools.read_file(path)
+
+
+@pytest.mark.parametrize("path", [
+    "repos/../../../etc/passwd",
+    "repos/owner/../../../../etc",
+    "repos/owner/name/../../../../../etc/shadow",
+])
+def test_the_cache_root_cannot_be_escaped_either(project, cache, path):
+    with pytest.raises(ValueError, match="escapes"):
+        tools._resolve(path)
+
+
+def test_the_cache_is_separate_from_the_project(project, cache):
+    """A repos/ path must not be able to reach the user's own files."""
+    (project / "secret.txt").write_text("private")
+    with pytest.raises(FileNotFoundError):
+        tools.read_file("repos/secret.txt")
+
+
+def test_a_projects_own_repos_directory_still_wins(project, cache):
+    """Adding this prefix must not change what an existing path means."""
+    (project / "repos").mkdir()
+    (project / "repos" / "mine.txt").write_text("the user's own file")
+    assert tools.read_file("repos/mine.txt") == "the user's own file"
+
+
+def test_sync_repo_says_so_when_the_prefix_is_shadowed(project, cache, monkeypatch):
+    """Silently returning an unreachable path would be the worst outcome."""
+    from sevanya import net
+
+    (project / "repos").mkdir()
+
+    def fake_sync(spec, cache=None):
+        return cache_root / "owner" / "name", "cloned owner/name at abc1234 (msg)"
+
+    cache_root = cache
+    monkeypatch.setattr(net, "sync", fake_sync)
+
+    out = tools.sync_repo("owner/name")
+    assert "own repos/ directory" in out
+    assert "can't be read" in out
+
+
+def test_sync_repo_hands_back_a_path_that_works(project, cache, monkeypatch):
+    """The reply should tell the model exactly how to read what it just fetched."""
+    from sevanya import net
+
+    def fake_sync(spec, cache=None):   # noqa: ARG001 - matches net.sync's signature
+        return cache_root / "owner" / "name", "cloned owner/name at abc1234 (msg)"
+
+    cache_root = cache
+    monkeypatch.setattr(net, "sync", fake_sync)
+    out = tools.sync_repo("owner/name")
+    assert "repos/owner/name/" in out
+    assert "lib.py" in out, "it should show what's in there"
