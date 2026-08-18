@@ -86,29 +86,63 @@ QR code or a Shortcut; the token is saved and stripped from the URL.
 |---|---|---|
 | `POST /api/chat` | web UI | SSE, streams as it thinks |
 | `POST /api/ask` | Siri Shortcut | blocking, one blob of text |
+| `GET /api/health` | the reconnect button | is it up, does it want a token — no auth |
 | `GET /api/conversations` | both | recent threads |
 | `GET /api/conversations/{id}` | both | readable transcript |
 
-## The task list
+## Her list
 
-`task_list` in the same SQLite database. She adds to it when you say you'll do
-something later, marks things done when you've done them, and removes what
-turned out not to matter.
+`task_list` in the same SQLite database. **It's hers, not mine.** She decides
+what goes on it — a gap she noticed, a concept I nearly have, a fix worth
+making properly — and she marks things off. I can read it. I can't edit it.
+
+That's the whole point. A list I could edit would drift into a list of what I
+already felt like doing, which I don't need her for.
 
 | tool | for |
 |---|---|
-| `add_task` | something you said you'd do |
-| `complete_task` | you did it |
+| `add_task` | something she's decided I should do |
+| `complete_task` | I did it |
 | `remove_task` | it stopped mattering — permanent, and not the same as done |
 | `list_tasks` | the whole list, completed ones included |
 
-Open tasks are injected into the system prompt the way recent journal notes
-are, so she starts every conversation already knowing what's outstanding —
-including the ids, since completing something needs one and she shouldn't have
-to look it up first. Capped at ten; the context window isn't free.
+The **Tasks** button in the web UI shows it, read-only: no checkboxes, no
+delete. `GET /api/tasks` is the only endpoint, and there's a test asserting no
+write endpoint appears, so adding one has to be a deliberate decision rather
+than a two-line drift.
 
-It's a different thing from the journal, which is what *she* noticed about how
-you're learning and is written once. This has a lifecycle.
+Open tasks are injected into the system prompt the way recent journal notes
+are, so she starts every conversation knowing what's outstanding — with the
+ids, since completing one needs an id and she shouldn't have to look it up
+first. Capped at ten; the context window isn't free.
+
+Different from the journal, which is what she noticed about how I'm learning
+and is written once. This has a lifecycle.
+
+## Restarting it from the phone
+
+**⏻** in the web UI restarts the server process — for when it's wedged and I'm
+not at the machine. It asks first, then waits for the server to genuinely come
+back before saying so.
+
+`POST /api/restart` schedules an `os.execv` and returns *before* replacing the
+process: restarting inline would drop the connection mid-request, which looks
+exactly like the button not working. Same PID afterwards, since execv replaces
+the image rather than spawning a child — which is why `/api/health` reports
+`started`. The pid can't tell "it restarted" from "nothing happened"; the start
+time can, and the UI polls on it rather than on any 200, because for a moment
+the server that's about to die is still answering.
+
+It requires the token when one is set — it's the only endpoint that does
+something to the machine rather than reading from it. With no token set,
+anything that can reach the port can bounce the server.
+
+The relaunch is always `python -m sevanya.server`, whatever was typed
+originally, because `python server.py` can't work — the relative imports need
+the package context that `-m` provides. cwd and the environment survive the
+exec, so `PROJECT_ROOT` and `SEVANYA_TOKEN` are the same on the other side.
+Set `SEVANYA_PORT` if 8765 isn't wanted. A reply still streaming is lost;
+conversations and the list are on disk and unaffected.
 
 ## Reaching outside the machine
 
@@ -179,6 +213,10 @@ sevanya/
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.
+- `tests/test_restart.py` starts a real server and restarts it for real. It's
+  the slow test, and the only one that would catch a restart that kills the
+  process and never brings it back — the failure that ends with me walking to
+  the machine.
 - The `task_list` table is created with `IF NOT EXISTS` like the rest of the
   schema, so an existing `~/.sevanya/sevanya.db` picks it up on next start.
   There's no migration to run.

@@ -185,21 +185,23 @@ TOOLS = [
     {
         "name": "add_task",
         "description": (
-            "Put something on the user's task list. Use this when they say "
-            "they're going to do something later, or when the two of you land "
-            "on a next step — 'I should write tests for that', 'let me come "
-            "back to the parser'. Open tasks are shown to you at the start of "
-            "every conversation, so this is how something survives until they "
-            "actually pick it up. One task per call. Don't add things they've "
-            "already done, and don't turn everything they mention into a task; "
-            "a list of everything is a list nobody reads."
+            "Put something on the list you keep for this person. The list is "
+            "yours, not theirs — you decide what goes on it. Use it when you "
+            "notice something they should do and this conversation isn't when "
+            "they'll do it: a gap worth closing, a concept worth practising, a "
+            "fix you spotted in their code, something to come back to with "
+            "fresh eyes. It is not a transcript of things they said they'd do; "
+            "if it were, they could keep it themselves. Open tasks are shown "
+            "to you at the start of every conversation, which is what makes "
+            "this the way something survives until it's done. One per call, "
+            "and few — a long list is one they stop reading."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "What they intend to do, in their terms, e.g. 'write the iOS Shortcut for /api/ask'",
+                    "description": "What they should do, specific enough to act on, e.g. 'rewrite the parser loop without the flag variable'",
                 }
             },
             "required": ["task"],
@@ -209,8 +211,9 @@ TOOLS = [
         "name": "complete_task",
         "description": (
             "Mark a task done. Use it as soon as they've clearly finished the "
-            "thing, without waiting to be told to tick it off — you can see the "
-            "open list, so noticing is your job. Say that you've done it."
+            "thing, without waiting to be told to tick it off — they can see "
+            "the list but cannot change it, so noticing is entirely your job. "
+            "Tell them you've marked it."
         ),
         "input_schema": {
             "type": "object",
@@ -226,10 +229,10 @@ TOOLS = [
     {
         "name": "remove_task",
         "description": (
-            "Delete a task from the list. For things that turned out not to "
-            "matter, got superseded, or were never really a task — not for "
-            "things they finished, which are complete_task. Deleting is "
-            "permanent, so if you're unsure which of the two it is, ask."
+            "Take something off the list you put there. For work that stopped "
+            "mattering or got superseded — not for things they finished, which "
+            "are complete_task. Deleting is permanent and loses the record that "
+            "it was ever asked for, so prefer complete_task when they did it."
         ),
         "input_schema": {
             "type": "object",

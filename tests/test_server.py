@@ -200,3 +200,105 @@ def test_the_page_and_its_icons_are_served(tmp_path, monkeypatch, blocks):
     manifest = client.get("/manifest.json").json()
     for icon in manifest["icons"]:
         assert client.get(icon["src"]).status_code == 200, f"{icon['src']} is missing"
+
+
+# --- health ----------------------------------------------------------------
+
+
+def test_health_needs_no_token_even_when_one_is_set(tmp_path, monkeypatch, blocks):
+    """The one endpoint that must answer without auth.
+
+    The client has to tell "the server is gone" from "the server is fine and my
+    token is wrong", and it can't if the check itself 401s in both cases.
+    """
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    body = client.get("/api/health").json()
+    assert body["ok"] is True
+    assert body["auth_required"] is True
+
+
+def test_health_says_when_no_token_is_required(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token=None)
+    assert client.get("/api/health").json()["auth_required"] is False
+
+
+def test_health_reports_when_this_process_started(tmp_path, monkeypatch, blocks):
+    """execv keeps the pid, so the pid can't show that a restart happened.
+
+    Without this the UI cannot tell a server that came back from one that
+    never went away.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    assert client.get("/api/health").json()["started"] == server.STARTED
+
+
+# --- restart ---------------------------------------------------------------
+
+
+def test_restart_requires_the_token_when_one_is_set(tmp_path, monkeypatch, blocks):
+    """This one does something to the machine rather than reading from it."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    called = []
+    monkeypatch.setattr(server, "_schedule_restart", lambda *a, **k: called.append(True))
+
+    assert client.post("/api/restart").status_code == 401
+    assert client.post("/api/restart", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert not called, "an unauthorised request must not have scheduled anything"
+
+
+def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch, blocks):
+    """The response has to go out before the process is replaced.
+
+    Restarting inline would drop the connection mid-request, which looks
+    exactly like the button not working.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    called = []
+    monkeypatch.setattr(server, "_schedule_restart", lambda *a, **k: called.append(True))
+
+    body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
+    assert body["restarting"] is True
+    assert body["pid"] == __import__("os").getpid()
+    assert called == [True]
+
+
+def test_the_relaunch_uses_the_module_entry_point(tmp_path, monkeypatch, blocks):
+    """`python server.py` cannot work — the relative imports need -m."""
+    _, server = build(tmp_path, monkeypatch, answer(blocks))
+    assert server.RELAUNCH[1:] == ["-m", "sevanya.server"]
+
+
+# --- the task list, read only ----------------------------------------------
+
+
+def test_tasks_are_readable(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    server.store.add_task("rewrite the parser loop")
+    done = server.store.add_task("already handled")
+    server.store.complete_task(done)
+
+    rows = client.get("/api/tasks").json()
+    assert [r["task"] for r in rows] == ["rewrite the parser loop", "already handled"]
+    assert [r["done"] for r in rows] == [0, 1]
+
+
+def test_tasks_need_the_token(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    assert client.get("/api/tasks").status_code == 401
+
+
+def test_there_is_no_way_to_change_the_list_over_http(tmp_path, monkeypatch, blocks):
+    """It's her list. A write endpoint would quietly make it the user's.
+
+    Checked against the route table rather than by trying verbs, so adding one
+    later fails here on purpose and has to be a deliberate decision.
+    """
+    _, server = build(tmp_path, monkeypatch, answer(blocks))
+    task_routes = [
+        (route.path, sorted(route.methods))
+        for route in server.app.routes
+        if getattr(route, "path", "").startswith("/api/tasks")
+    ]
+    assert task_routes, "the tasks endpoint disappeared"
+    for path, methods in task_routes:
+        assert set(methods) <= {"GET", "HEAD"}, f"{path} accepts {methods}"

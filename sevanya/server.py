@@ -14,6 +14,9 @@ Everything intelligent stays here on the PC. The phone is a thin client.
 
 import json
 import os
+import sys
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
@@ -33,6 +36,11 @@ WEB_DIR = Path(__file__).parent / "web"
 # on your machine.
 TOKEN = os.environ.get("SEVANYA_TOKEN")
 
+# 8765 unless told otherwise. Configurable mostly so a second copy — a test,
+# or a throwaway one pointed at another project — doesn't have to fight the
+# one you actually use for the port.
+PORT = int(os.environ.get("SEVANYA_PORT", "8765"))
+
 # Appended to the system prompt for /ask only. Siri reads the reply aloud, and
 # anything longer than a few sentences is unbearable through a speaker.
 SPOKEN = """
@@ -41,6 +49,12 @@ of plain prose. No code blocks, no bullet lists, no file paths unless the answer
 is meaningless without one. If the honest answer needs more room than that, give
 the short version and say the detail is worth looking at on a screen.
 """
+
+# When this process image started. execv keeps the PID, so the pid alone can't
+# tell "it restarted" from "nothing happened" — this can, and the restart
+# button uses it to confirm the server really came back rather than never
+# having gone away.
+STARTED = time.time()
 
 app = FastAPI(title="Sevanya")
 store = Store()
@@ -123,6 +137,84 @@ def ask(body: AskIn, authorization: str | None = Header(default=None)):
     return {"reply": agent.send(body.message), "conversation_id": conversation_id}
 
 
+@app.get("/api/health")
+def health():
+    """Is the server there, and does it want a token?
+
+    Deliberately the one endpoint that doesn't require auth. The client needs
+    to tell "the server is gone" apart from "the server is fine and my token is
+    wrong", and it can't do that if the check itself returns 401 in both cases.
+    It reveals only whether a token is needed, which anyone who can reach this
+    port finds out from their first request anyway.
+    """
+    return {"ok": True, "auth_required": bool(TOKEN), "started": STARTED}
+
+
+# How to start a fresh copy of this server. Always the module entry point,
+# whatever was typed originally: `python server.py` can't work, because the
+# relative imports need the package context that -m provides. cwd and the
+# environment come along with exec, so PROJECT_ROOT and SEVANYA_TOKEN are the
+# same on the other side.
+RELAUNCH = [sys.executable, "-m", "sevanya.server"]
+
+
+def _relaunch() -> None:
+    """Replace this process with a new one.
+
+    execv rather than spawn-and-exit: same PID, same terminal, and no window
+    where nothing is listening because the parent died before the child was
+    up. Python marks its own file descriptors non-inheritable, so the listening
+    socket closes as the image is replaced and the new process can take the
+    port straight back.
+    """
+    os.execv(sys.executable, RELAUNCH)
+
+
+def _schedule_restart(delay: float = 0.4) -> None:
+    """Restart, but not until the response has gone out.
+
+    Calling execv inline would replace the process mid-request and the client
+    would see a dropped connection rather than an answer — which is exactly
+    the state the button exists to get out of, so it would be indistinguishable
+    from the button not working.
+    """
+    def run():
+        time.sleep(delay)
+        _relaunch()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.post("/api/restart")
+def restart(authorization: str | None = Header(default=None)):
+    """Restart the server process.
+
+    Requires the token when one is set — this is the one endpoint that does
+    something to the machine rather than reading from it. With no token set,
+    anything that can reach the port can bounce the server; that's the same
+    exposure as every other endpoint here, but it's worth knowing.
+
+    In-flight streams die with the old process. The client polls /api/health
+    and picks its thread back up from the database, which is on disk and
+    unaffected.
+    """
+    _auth(authorization)
+    _schedule_restart()
+    return {"restarting": True, "pid": os.getpid()}
+
+
+@app.get("/api/tasks")
+def tasks(include_done: bool = True, authorization: str | None = Header(default=None)):
+    """The task list, for reading.
+
+    Read-only by design: this is Sevanya's list of what she thinks you should
+    do, not a to-do app you fill in. There's no endpoint to add or tick one
+    off from the phone, because the list means nothing if it's yours.
+    """
+    _auth(authorization)
+    return [dict(row) for row in store.list_tasks(include_done=include_done)]
+
+
 @app.get("/api/conversations")
 def conversations(authorization: str | None = Header(default=None)):
     _auth(authorization)
@@ -174,9 +266,10 @@ def main() -> None:
 
     print(f"Sevanya server — reading from {PROJECT_ROOT}")
     print(f"auth: {'bearer token required' if TOKEN else 'OPEN (set SEVANYA_TOKEN to lock)'}")
+    print(f"listening on :{PORT}")
     # 0.0.0.0 so your phone can reach it over Tailscale. On a machine that is
     # NOT on a private network, this listens on every interface — set a token.
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":

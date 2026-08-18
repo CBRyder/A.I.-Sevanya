@@ -142,3 +142,68 @@ def test_the_token_can_be_entered_on_the_device():
     assert "token-input" in MARKUP_IDS, "no way to type a token in the UI"
     assert "askToken" in HTML
     assert "searchParams.get('token')" in HTML, "no ?token= path for a Shortcut or QR code"
+
+
+# --- the task panel is a display, not an editor ----------------------------
+
+
+def test_the_task_panel_never_builds_a_control():
+    """No checkbox, no button, no input inside the list.
+
+    The list is Sevanya's judgement about what this person should do next. A
+    tick box here would make it theirs, which is a product decision hiding in
+    two lines of DOM code — so it's pinned here rather than left to taste.
+    """
+    render = HTML.split("bind('tasks-btn'")[1].split("bind('restart-btn'")[0]
+    for control in ("createElement('input')", "createElement('button')",
+                    "type = 'checkbox'", 'type="checkbox"'):
+        assert control not in render, f"the task panel builds a {control}"
+
+
+def test_the_page_never_writes_to_the_task_api():
+    """Reading is the only thing the UI is allowed to do with the list."""
+    for script in CODE:
+        for match in re.finditer(r"fetch\(\s*'(/api/tasks[^']*)'\s*(?:,\s*\{([^}]*)\})?", script):
+            options = match.group(2) or ""
+            assert "method" not in options, f"{match.group(1)} is called with a method: {options}"
+
+
+def test_the_task_panel_says_whose_list_it_is():
+    """A bare list of imperatives reads as a to-do app you forgot to finish."""
+    panel = HTML.split('id="tasks"')[1].split("</div>")[0:6]
+    text = " ".join(panel)
+    assert "Sevanya decides" in text or "Her list" in text
+
+
+# --- restarting ------------------------------------------------------------
+
+
+def test_restarting_asks_first():
+    """One stray tap shouldn't take the server down mid-answer."""
+    assert "restart-cancel" in MARKUP_IDS
+    assert "restart-go" in MARKUP_IDS
+    body = HTML.split('id="restart"')[1]
+    assert "Restart the server?" in body
+
+
+def test_the_restart_flow_waits_for_a_new_process():
+    """Polling for any answer would catch the old process still shutting down.
+
+    The restart is delayed so the response can go out first, so for a moment
+    the server that's about to die is still replying 200.
+    """
+    flow = HTML.split("bind('restart-go'")[1]
+    assert "/api/restart" in flow
+    assert "/api/health" in HTML
+    assert "no-store" in HTML, "a cached health response would fake a recovery"
+    # The comparison itself, not merely the word "started" — that appears in
+    # the line that reads the value, so matching it would pass with the check
+    # removed entirely.
+    assert re.search(r"\.started\s*>\s*before", flow), (
+        "nothing compares the new start time against the old one"
+    )
+
+
+def test_the_restart_flow_gives_up_rather_than_hanging():
+    flow = HTML.split("bind('restart-go'")[1]
+    assert "did not come back" in flow
