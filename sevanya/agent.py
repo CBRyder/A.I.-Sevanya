@@ -9,13 +9,9 @@ the conversation, and calls the model again. Repeat until it stops asking.
 That's what makes an "agent" rather than a chatbot.
 """
 
-import anthropic
-
-from . import tools
+from . import backends, tools
 from .prompt import SYSTEM
 from .store import Store
-
-MODEL = "claude-opus-5"
 
 # A runaway loop is a runaway bill. If it's made this many tool calls without
 # arriving at an answer, something is wrong and you want to know about it.
@@ -27,10 +23,20 @@ class Agent:
         self,
         store: Store,
         conversation_id: int,
-        client: anthropic.Anthropic | None = None,
+        client=None,
         system_extra: str = "",
+        backend=None,
     ):
-        self.client = client or anthropic.Anthropic()
+        # `backend` decides which model answers — Anthropic, or something on
+        # your own machine. `client` is still accepted because tests pass one;
+        # it's wrapped rather than used directly, so there's one path through
+        # here regardless.
+        if backend is not None:
+            self.backend = backend
+        elif client is not None:
+            self.backend = backends.AnthropicBackend(client=client)
+        else:
+            self.backend = backends.choose()
         self.store = store
         self.conversation_id = conversation_id
         # Extra instructions for this agent only — the voice endpoint uses it
@@ -82,42 +88,35 @@ class Agent:
         self._record("user", user_text)
 
         for _ in range(MAX_STEPS):
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                system=self._system(),
-                tools=tools.TOOLS,
-                thinking={"type": "adaptive"},
-                messages=self.messages,
-            )
+            response = self.backend.send(self._system(), self.messages, tools.TOOLS)
 
             # Append the *whole* content list, not just the text. It contains
             # the tool_use blocks, and the next request will be rejected if
             # they're missing — every tool_result has to answer a tool_use the
             # model can still see. Same reason store.py keeps blocks as JSON.
-            self._record("assistant", response.content)
+            self._record("assistant", response.content, self.backend.describe())
 
             if response.stop_reason != "tool_use":
-                return _text_of(response.content)
+                return response.text()
 
             # It asked for one or more tools. Run them all, then send every
             # result back in a single user message — splitting them across
             # several messages trains the model out of asking in parallel.
             results = []
             for block in response.content:
-                if block.type != "tool_use":
+                if block.get("type") != "tool_use":
                     continue
                 output, is_error = tools.dispatch(
-                    block.name,
-                    block.input,
+                    block["name"],
+                    block.get("input", {}),
                     store=self.store,
                     conversation_id=self.conversation_id,
                 )
-                print(f"  [{block.name} {block.input}]")
+                print(f"  [{block['name']} {block.get('input', {})}]")
                 results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": block.id,  # must match the request
+                        "tool_use_id": block["id"],  # must match the request
                         "content": output,
                         "is_error": is_error,
                     }
@@ -141,40 +140,32 @@ class Agent:
         self._record("user", user_text)
 
         for _ in range(MAX_STEPS):
-            with self.client.messages.stream(
-                model=MODEL,
-                max_tokens=16000,
-                system=self._system(),
-                tools=tools.TOOLS,
-                thinking={"type": "adaptive"},
-                messages=self.messages,
-            ) as stream:
-                # text_stream yields only visible text — thinking and tool_use
-                # blocks are accumulated but not emitted here.
-                for chunk in stream.text_stream:
-                    yield ("text", chunk)
-                response = stream.get_final_message()
+            # `yield from` on a generator hands back whatever it returns, which
+            # is how the finished Reply comes out the other side of the text.
+            response = yield from _tagged(
+                self.backend.stream(self._system(), self.messages, tools.TOOLS)
+            )
 
-            self._record("assistant", response.content)
+            self._record("assistant", response.content, self.backend.describe())
 
             if response.stop_reason != "tool_use":
                 return
 
             results = []
             for block in response.content:
-                if block.type != "tool_use":
+                if block.get("type") != "tool_use":
                     continue
-                yield ("tool", block.name)
+                yield ("tool", block["name"])
                 output, is_error = tools.dispatch(
-                    block.name,
-                    block.input,
+                    block["name"],
+                    block.get("input", {}),
                     store=self.store,
                     conversation_id=self.conversation_id,
                 )
                 results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "tool_use_id": block["id"],
                         "content": output,
                         "is_error": is_error,
                     }
@@ -184,7 +175,7 @@ class Agent:
 
         yield ("text", "\n(gave up after too many tool calls — something's looping)")
 
-    def _record(self, role: str, content) -> None:
+    def _record(self, role: str, content, model: str | None = None) -> None:
         """Append to the in-memory transcript and to disk, together.
 
         Kept as one call so the two can't drift. If you write to the list in
@@ -193,14 +184,19 @@ class Agent:
         conversation the API refuses.
         """
         self.messages.append({"role": role, "content": content})
-        self.store.append_message(self.conversation_id, role, content)
+        self.store.append_message(self.conversation_id, role, content, model=model)
 
 
-def _text_of(content) -> str:
-    """Pull the readable text out of a response.
+def _tagged(stream):
+    """Relabel a backend's bare text chunks as ("text", chunk) pairs.
 
-    A response is a list of blocks, and only some are text — there may be
-    thinking blocks and tool_use blocks in there too. Reaching straight for
-    content[0].text works right up until it doesn't.
+    The backend yields strings and *returns* the finished Reply; callers here
+    want tagged tuples and the Reply. StopIteration.value is where a
+    generator's return value arrives, and passing it back out is what lets
+    Agent.stream say `response = yield from _tagged(...)`.
     """
-    return "\n".join(b.text for b in content if b.type == "text")
+    while True:
+        try:
+            yield ("text", next(stream))
+        except StopIteration as done:
+            return done.value

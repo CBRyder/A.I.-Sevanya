@@ -10,11 +10,13 @@ makes everything after it reversible.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from . import migrations
-from .store import DB_PATH, Store
+from . import backends, migrations
+from .prompt import SYSTEM
+from .store import CHECKIN_MARKER, DB_PATH, Store
 
 
 def check(store: Store) -> int:
@@ -114,6 +116,49 @@ def clear_history(store: Store, keep_days: int, assume_yes: bool, skip_backup: b
     return 0
 
 
+def export(store: Store, destination: str, model: str | None, min_messages: int) -> int:
+    """Write the conversations out as training data.
+
+    Deliberately reuses the same converter that talks to a local model, so
+    what comes out is in the shape the tools that fine-tune one already read —
+    and so there's one definition of "this transcript as chat messages"
+    rather than two that drift.
+
+    Automatic check-ins are left out. Their opening turn is an instruction to
+    her, not something you said, and training on it would teach a model that
+    users talk like a cron job.
+    """
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    ids = store.conversations_for_export(model=model, min_messages=min_messages)
+    written = skipped = 0
+
+    with path.open("w", encoding="utf-8") as out:
+        for conversation_id in ids:
+            messages = [
+                m for m in store.load_messages(conversation_id)
+                if not (isinstance(m["content"], str) and m["content"].startswith(CHECKIN_MARKER))
+            ]
+            if len(messages) < min_messages:
+                skipped += 1
+                continue
+            converted = backends.messages_for_openai(SYSTEM, messages)
+            if not any(m["role"] == "assistant" for m in converted):
+                skipped += 1      # nothing to learn from a thread she never answered
+                continue
+            out.write(json.dumps({"messages": converted}, ensure_ascii=False) + "\n")
+            written += 1
+
+    print(f"wrote {written} conversations to {path}")
+    if skipped:
+        print(f"skipped {skipped} (too short, or she never answered)")
+    if model:
+        print(f"filtered to threads answered by {model!r}")
+    print("one JSON object per line, OpenAI chat format — what fine-tuning tools read")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m sevanya.db", description=__doc__)
     parser.add_argument("--path", type=Path, default=DB_PATH, help="database file")
@@ -134,6 +179,14 @@ def main(argv: list[str] | None = None) -> int:
     clear_parser.add_argument("--no-backup", action="store_true",
                               help="skip the automatic backup (don't)")
 
+    export_parser = sub.add_parser("export",
+                                   help="write conversations out as training data (JSONL)")
+    export_parser.add_argument("out", help="file to write")
+    export_parser.add_argument("--model",
+                               help="only threads answered by this model, e.g. 'claude'")
+    export_parser.add_argument("--min-messages", type=int, default=2,
+                               help="skip threads shorter than this (default 2)")
+
     args = parser.parse_args(argv)
 
     try:
@@ -152,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
             return migrate(store)
         if args.command == "clear-history":
             return clear_history(store, args.keep_days, args.yes, args.no_backup)
+        if args.command == "export":
+            return export(store, args.out, args.model, args.min_messages)
     finally:
         store.close()
 

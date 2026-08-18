@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS messages (
     -- *list of blocks* that can include tool_use and thinking blocks, and
     -- those have to survive a reload intact. See _jsonable below.
     content         TEXT NOT NULL,
+    -- Which model produced this turn, for assistant turns. Null for anything
+    -- written before the column existed, and for user turns. Worth keeping
+    -- because the transcripts are training material for a local model, and
+    -- material you can't attribute is material you can't filter.
+    model           TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -216,10 +221,11 @@ class Store:
 
     # --- messages -----------------------------------------------------------
 
-    def append_message(self, conversation_id: int, role: str, content) -> None:
+    def append_message(self, conversation_id: int, role: str, content,
+                       model: str | None = None) -> None:
         self.db.execute(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
-            (conversation_id, role, json.dumps(_jsonable(content))),
+            "INSERT INTO messages (conversation_id, role, content, model) VALUES (?, ?, ?, ?)",
+            (conversation_id, role, json.dumps(_jsonable(content)), model),
         )
         self.db.execute(
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
@@ -527,6 +533,35 @@ class Store:
                                    "why": "a content block has no 'type'"})
                     break
         return broken
+
+    def conversations_for_export(self, model: str | None = None,
+                                 min_messages: int = 2) -> list[int]:
+        """Conversation ids worth training on.
+
+        `model` narrows it to threads a particular model answered — which is
+        the useful case: taking what Claude wrote and teaching a local model
+        to do the same. Short threads are dropped because a one-line exchange
+        teaches a model nothing except how to be brief.
+        """
+        if model:
+            rows = self.db.execute(
+                """SELECT conversation_id FROM messages
+                   WHERE model LIKE ?
+                   GROUP BY conversation_id
+                   HAVING COUNT(*) >= 1""",
+                (f"%{model}%",),
+            ).fetchall()
+            candidates = {row["conversation_id"] for row in rows}
+        else:
+            candidates = None
+
+        rows = self.db.execute(
+            """SELECT conversation_id, COUNT(*) AS n FROM messages
+               GROUP BY conversation_id HAVING n >= ? ORDER BY conversation_id""",
+            (min_messages,),
+        ).fetchall()
+        return [r["conversation_id"] for r in rows
+                if candidates is None or r["conversation_id"] in candidates]
 
     def close(self) -> None:
         """Close this thread's connection. Other threads keep their own."""
