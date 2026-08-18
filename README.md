@@ -86,6 +86,44 @@ list — all tools. Local models vary enormously at that, and a model that calls
 tools unreliably will feel much worse than the same model does in a chat box.
 Pick one that's good at function calling, and expect to try a few.
 
+## Handing work to a helper
+
+She can send a piece of reading to a sub-agent: `delegate("Find where the save
+file is written and summarise the format")`. It reads in its own context and
+returns a paragraph.
+
+The reason isn't specialisation, it's arithmetic. Her fixed overhead is ~3,500
+tokens before you type, one `read_file` can add ten thousand, and a local model
+gives you 32k. Three file reads and the conversation is full — everything after
+that is her forgetting the start of what you were doing. A helper that reads
+five files and hands back two sentences costs the conversation two sentences.
+
+Two constraints keep it honest:
+
+- **Reading tools only** — no journal, no task list, no notifying anyone. Those
+  are her judgement about the person she's teaching; an errand-runner has no
+  business forming them. And no `delegate`, so it can't spawn its own helpers.
+- **Capped output**, because a helper that returns everything it read has moved
+  the problem rather than solved it.
+
+Its transcript is kept — when a delegated answer turns out to be wrong, reading
+what it actually did is the only way to find out why — as a conversation marked
+`kind='subagent'`, filtered out of your list.
+
+## Different models for different jobs
+
+Searching is not the work that needs your best model, and neither is a
+two-sentence nudge written once a day while you're asleep.
+
+```bash
+SEVANYA_SUBAGENT_BACKEND=local     # the legwork runs on the local model
+SEVANYA_CHECKIN_BACKEND=local      # so does the daily check-in
+```
+
+Unset, each uses whatever the conversation uses. Set, they don't — so you can
+keep the good model for teaching and let a small local one fetch and summarise,
+which is the sort of thing a 9B is genuinely fine at.
+
 ## Improving one for yourself
 
 The transcripts are the training material, and they're yours.
@@ -419,6 +457,7 @@ sevanya/
   tools.py    what it's allowed to do (note what's absent)
   backends.py which model answers, and the translation that allows a local one
   check.py    is the local model reachable, and does it call tools
+  subagent.py sending reading elsewhere, so it doesn't cost the conversation
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
   push.py     sending a notification to the phone
