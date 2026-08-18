@@ -141,7 +141,23 @@ def initialise(conn: sqlite3.Connection, schema_sql: str) -> list[str]:
     it's the one that catches a change made in SCHEMA alone and never migrated.
     """
     fresh = is_empty(conn)
-    conn.executescript(schema_sql)
+
+    try:
+        conn.executescript(schema_sql)
+    except sqlite3.OperationalError as exc:
+        # SCHEMA is not purely additive in practice: it also creates indexes,
+        # and CREATE INDEX ... ON journal(topic) raises a bare "no such column"
+        # against a table whose columns have changed. That happens *before* the
+        # drift check below, so the useful message never gets a chance. Convert
+        # it here, with the drift detail attached.
+        problems = drift(conn)
+        raise SchemaMismatch(
+            f"the database couldn't be brought up to date: {exc}\n\n"
+            + ("\n".join(f"  - {p}" for p in problems) + "\n\n" if problems else "")
+            + "This is what CREATE TABLE IF NOT EXISTS can't tell you: it sees "
+            "the table exists and never checks the columns.\n"
+            "Back up and inspect it with:  python -m sevanya.db check"
+        ) from exc
 
     if fresh:
         # SCHEMA is the current shape by definition, so there's nothing to
