@@ -431,3 +431,71 @@ def test_a_database_with_work_waiting_is_not_stamped_ahead(raw, monkeypatch):
     monkeypatch.setattr(migrations, "MIGRATIONS", [(5, "future", never_runs)])
     # pending() is non-empty, so the stamp must not fire behind its back
     assert migrations.pending(raw)
+
+
+# --- the crash that pre-empted the useful message --------------------------
+
+ORIGINAL_TABLES = """
+CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL
+  REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL,
+  content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE journal (id INTEGER PRIMARY KEY, topic TEXT NOT NULL, note TEXT NOT NULL,
+  conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+"""
+
+
+def test_a_changed_column_explains_itself_instead_of_crashing(tmp_path):
+    """SCHEMA isn't purely additive — it creates indexes too.
+
+    CREATE INDEX ... ON journal(topic) raises a bare "no such column" against a
+    table whose columns have changed, and it does so before the drift check
+    runs, so the message written to explain exactly this situation never got a
+    chance to appear. Found by pointing the tool at a database shaped the way
+    an overhaul would leave one.
+    """
+    path = tmp_path / "wrong.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("CREATE TABLE journal (id INTEGER PRIMARY KEY, note TEXT);")
+    conn.commit(); conn.close()
+
+    with pytest.raises(migrations.SchemaMismatch) as caught:
+        Store(path)
+
+    message = str(caught.value)
+    assert "no such column" in message, "the underlying cause should still be shown"
+    assert "journal.topic is missing" in message, "and what's actually wrong"
+    assert "sevanya.db check" in message
+
+
+def test_an_old_but_healthy_database_still_gains_new_tables(tmp_path):
+    """The upgrade path this must not break.
+
+    task_list and notifications were both added to an existing database this
+    way. Refusing to open anything that doesn't already have them would turn
+    every future addition into a manual migration for no reason.
+    """
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(ORIGINAL_TABLES)
+    conn.execute("INSERT INTO journal (topic, note) VALUES ('python', 'a real note')")
+    conn.commit(); conn.close()
+
+    store = Store(path)
+    assert "task_list" in migrations.tables(store.db)
+    assert "notifications" in migrations.tables(store.db)
+    assert store.recall("real note"), "the existing journal must survive the upgrade"
+    assert migrations.version(store.db) == migrations.LATEST
+
+
+def test_the_cli_reports_a_wrong_shaped_database_rather_than_tracebacking(tmp_path, capsys):
+    path = tmp_path / "wrong.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("CREATE TABLE journal (id INTEGER PRIMARY KEY, note TEXT);")
+    conn.commit(); conn.close()
+
+    assert db_cli.main(["--path", str(path), "check"]) == 2
+    assert "journal.topic is missing" in capsys.readouterr().err

@@ -404,6 +404,12 @@ And in case someone forgets, `Store` **refuses to open** a database whose
 columns don't match what the code expects, with a message naming the missing
 column. A clear failure at startup beats a puzzling one at the first write.
 
+That includes the case where `SCHEMA` itself can't run: it creates indexes as
+well as tables, and `CREATE INDEX ... ON journal(topic)` raises a bare `no such
+column` against a table whose columns have changed — before the drift check
+gets a turn. That's caught and re-raised with the drift attached, so the
+message written to explain exactly this situation actually appears.
+
 ### Old rows keep their old shape
 
 Message content is stored as JSON and read back as whatever shape it went in
