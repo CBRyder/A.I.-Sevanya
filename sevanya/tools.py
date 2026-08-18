@@ -9,7 +9,7 @@ doesn't exist cannot.
 
 from pathlib import Path, PurePosixPath
 
-from . import deps, lifecycle, net
+from . import deps, lifecycle, net, push
 
 # Everything is resolved relative to wherever you launch Sevanya from.
 PROJECT_ROOT = Path.cwd().resolve()
@@ -179,6 +179,33 @@ TOOLS = [
                 }
             },
             "required": [],
+        },
+    },
+    {
+        "name": "notify_phone",
+        "description": (
+            "Send a notification to their phone. Use it when something is "
+            "worth interrupting them for and they aren't looking at the "
+            "screen: a long job finished, you found something they'd want to "
+            "know now rather than later, or they asked to be told when "
+            "something happened. Be sparing. A notification that wasn't worth "
+            "reading teaches them to ignore the next one, and the next one "
+            "might be the one that mattered. If you're not sure it's worth a "
+            "buzz, it isn't — say it in the conversation instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The notification body. Whole and useful on its own — they may read only this.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short heading, e.g. 'Reload finished'. Defaults to 'Sevanya'.",
+                },
+            },
+            "required": ["message"],
         },
     },
     {
@@ -554,6 +581,26 @@ def recall(query: str, *, store, conversation_id) -> str:
     return "\n".join(out)
 
 
+# --- the phone --------------------------------------------------------------
+
+
+def notify_phone(message: str, title: str = "Sevanya", *, store, conversation_id) -> str:
+    message = message.strip()
+    if not message:
+        return "nothing to send — the message was empty"
+
+    if not push.configured():
+        # Say how to fix it rather than just failing. Otherwise she'll keep
+        # trying, and the user never finds out why nothing arrives.
+        return (
+            "No phone is set up, so nothing was sent. Set SEVANYA_NTFY_TOPIC "
+            "(and subscribe to that topic in the ntfy app) to turn this on."
+        )
+
+    ok, detail = push.send_and_log(store, message, title=title)
+    return f"sent to their phone: {title} — {message}" if ok else f"couldn't send it: {detail}"
+
+
 # --- reloading --------------------------------------------------------------
 
 
@@ -569,6 +616,10 @@ def reload(install: bool = True, *, store, conversation_id) -> str:
     store.notify("requirements" if ok else "requirements-failed", report)
 
     if not ok:
+        # Worth a buzz without being asked: they pressed reload and walked
+        # away, and the alternative to telling them is them assuming it worked.
+        push.send_and_log(store, f"Reload stopped — {report.splitlines()[0]}",
+                          title="Sevanya couldn't reload", priority="high")
         # Don't restart into a broken environment. The process would come back
         # far enough to fail on import, and then there's nothing listening to
         # explain why.
@@ -618,6 +669,7 @@ def complete_task(task_id: int, *, store, conversation_id) -> str:
     if existing["done"]:
         return f"task {task_id} was already done: {existing['task']}"
     store.complete_task(task_id)
+    push.send_and_log(store, existing["task"], title="Ticked off", tags="white_check_mark")
     return f"completed task {task_id}: {existing['task']}"
 
 
@@ -655,13 +707,14 @@ REGISTRY = {
     "remove_task": remove_task,
     "list_tasks": list_tasks,
     "reload": reload,
+    "notify_phone": notify_phone,
 }
 
 # Tools needing access to the journal. Listed explicitly rather than inspected
 # at runtime — you can see at a glance which tools touch persistent state.
 NEEDS_STORE = {"remember", "recall",
                "add_task", "complete_task", "remove_task", "list_tasks",
-               "reload"}
+               "reload", "notify_phone"}
 
 
 def dispatch(name: str, arguments: dict, *, store=None, conversation_id=None) -> tuple[str, bool]:

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import deps, lifecycle
+from . import deps, lifecycle, push
 from .agent import Agent
 from .store import Store
 from .tools import PROJECT_ROOT
@@ -78,6 +78,11 @@ if os.environ.get("SEVANYA_SKIP_DEPS"):
     _deps_ok, _deps_report = True, "requirements not checked (SEVANYA_SKIP_DEPS)"
 else:
     _deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=True)
+    if not _deps_ok:
+        # A server that came up wrong is exactly the thing you'd otherwise
+        # only discover by walking to the machine.
+        push.send_and_log(store, _deps_report.splitlines()[0],
+                          title="Sevanya started with problems", priority="high")
 store.notify("startup", f"server started — {_deps_report}")
 store.trim_notifications()
 

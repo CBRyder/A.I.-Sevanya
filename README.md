@@ -166,6 +166,43 @@ its own check as a backstop for anyone starting the module directly, and
 records the answer either way, so a start into a broken environment leaves
 evidence.
 
+## Reaching my phone
+
+She can push a notification to my phone through [ntfy](https://ntfy.sh).
+
+```bash
+export SEVANYA_NTFY_TOPIC=some-long-unguessable-string
+export SEVANYA_NTFY_SERVER=https://ntfy.sh   # optional, or my own instance
+export SEVANYA_NTFY_TOKEN=tk_...             # optional, for a protected topic
+```
+
+Then subscribe to the same topic in the ntfy app. **The topic name is the
+password** — anyone who knows it can read the notifications and publish to
+them. Make it long, don't send anything through it I'd mind a stranger reading,
+or point `SEVANYA_NTFY_SERVER` at my own instance, which is config and no code.
+The topic is never printed in a log line or an error; `push.where()` shows the
+server only.
+
+She pushes in three cases:
+
+- **when she decides it's worth it** — the `notify_phone` tool. The prompt tells
+  her to be sparing: a buzz that wasn't worth reading teaches me to ignore the
+  next one, and the next one might be the one that mattered.
+- **when something failed that I'd otherwise only find by walking to the PC** —
+  a reload that couldn't fix the requirements, a server that started wrong.
+  Not on success: the page comes back by itself and I'm already looking at it.
+- **when she ticks something off her list.**
+
+Unlike `fetch_url`, this URL is mine rather than the model's, so it doesn't go
+through `net.check_url` — a self-hosted ntfy on my own network is exactly the
+setup that check refuses, and rightly so for an address the model picked.
+
+A push failing never breaks what she was doing. Most of them happen while
+something is already going wrong, and a failed notification becoming the new
+exception turns "the reload failed" into "the reload crashed". Every attempt is
+recorded either way, because a push that silently didn't arrive is worse than
+one that never existed — I'd be sitting there assuming I'd have been told.
+
 ## Notices
 
 `notifications` in the same database — restarts, dependency checks, errors:
@@ -250,6 +287,7 @@ sevanya/
   tools.py    what it's allowed to do (note what's absent)
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
+  push.py     sending a notification to the phone
   lifecycle.py  restarting the process, shared by the endpoint and the tool
   __main__.py   `python -m sevanya` — requirements first, then the server
   store.py    SQLite: conversations, messages, journal, task list
