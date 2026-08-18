@@ -19,6 +19,7 @@ hours later into a clear message before anything has been written.
 """
 
 import sqlite3
+from _collections_abc import Callable
 
 # Bumped by adding to MIGRATIONS. A fresh database is stamped with this
 # straight away, because SCHEMA already builds the current shape.
@@ -53,7 +54,8 @@ EXPECTED = {
 #
 # Empty for now. The point is that the next schema change goes through here
 # rather than into SCHEMA alone.
-MIGRATIONS: list[tuple[int, str, object]] = []
+Migration = Callable[[sqlite3.Connection], None]
+MIGRATIONS: list[tuple[int, str, Migration]] = []
 
 
 # --- helpers for writing migrations ----------------------------------------
@@ -103,7 +105,7 @@ def is_empty(conn: sqlite3.Connection) -> bool:
 # --- the two jobs ----------------------------------------------------------
 
 
-def pending(conn: sqlite3.Connection) -> list[tuple[int, str, object]]:
+def pending(conn: sqlite3.Connection) -> list[tuple[int, str, Migration]]:
     at = version(conn)
     return sorted((m for m in MIGRATIONS if m[0] > at), key=lambda m: m[0])
 
