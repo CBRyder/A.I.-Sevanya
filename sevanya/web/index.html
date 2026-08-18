@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- maximum-scale/user-scalable stop iOS zooming in when you tap the input,
+     which otherwise leaves the page enlarged and needing a pinch back. The
+     cost is real — pinch-zoom is gone, so a long line of code can't be zoomed.
+     Chosen deliberately. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Sevanya">
@@ -14,6 +18,9 @@
 <style>
   :root { --bg:#16161a; --panel:#1e1e24; --line:#2c2c35; --text:#e6e6ea; --dim:#8b8b99; --accent:#7aa2f7; }
   * { box-sizing: border-box; -webkit-text-size-adjust: 100%; }
+  /* Stops iOS rubber-banding the whole page and hijacking a scroll meant for
+     the transcript. */
+  html, body { overscroll-behavior:none; }
   body {
     margin:0; background:var(--bg); color:var(--text);
     font:15px/1.6 ui-sans-serif, -apple-system, system-ui, sans-serif;
@@ -26,15 +33,69 @@
   }
   header b { font-weight:600; letter-spacing:.02em; }
   header small { color:var(--dim); font-size:12px; }
-  /* The controls wrap as one group rather than individually, so a narrow
-     phone gets a tidy second row instead of one orphaned button. */
   header nav { display:flex; gap:8px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end; }
   button {
     background:var(--line); color:var(--text); border:0; border-radius:8px;
     padding:7px 12px; font-size:13px; cursor:pointer;
   }
   button:active { opacity:.7; }
-  #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; }
+  button.danger { background:#5c2b33; }
+  #log {
+    flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    padding:16px; display:flex; flex-direction:column; gap:14px;
+  }
+
+  /* One panel, used by everything. A dropdown under the header on a desktop;
+     a page that covers the screen on a phone. Nothing has a Close at the
+     bottom — the way out is Back, top left, where a thumb already is, and it
+     stays put while the list scrolls under it. */
+  #panel {
+    display:none; position:absolute; top:53px; left:0; right:0; max-height:60vh;
+    overflow-y:auto; background:var(--panel); border-bottom:1px solid var(--line);
+    z-index:10; box-shadow:0 8px 24px rgba(0,0,0,.4);
+  }
+  #panel.open { display:block; }
+  #panel .head {
+    position:sticky; top:0; background:var(--panel); z-index:1;
+    display:flex; align-items:center; gap:12px;
+    padding:10px 16px; border-bottom:1px solid var(--line);
+  }
+  #panel .head span.label {
+    color:var(--dim); font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+  }
+  #panel .head button.act { margin-left:auto; }
+  /* Back exists only where the panel covers the screen — on desktop the button
+     that opened it is still visible behind and toggles it shut. */
+  #panel .head .back { display:none; margin-left:0; }
+
+  @media (max-width: 640px) {
+    #panel {
+      top:0; height:100dvh; max-height:none;
+      padding-top: env(safe-area-inset-top);
+    }
+    #panel .head .back { display:inline-block; }
+    #panel .row { padding:14px 16px; }        /* bigger tap targets */
+  }
+
+  #panel .row { padding:11px 16px; border-bottom:1px solid var(--line); }
+  #panel .row.tap { cursor:pointer; }
+  #panel .row.tap:active { background:var(--line); }
+  #panel .row.current { border-left:3px solid var(--accent); }
+  #panel .t { display:block; overflow-wrap:anywhere; }
+  #panel .t.clip { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #panel .m { color:var(--dim); font-size:12px; }
+  #panel .empty, #panel .note { padding:14px 16px; color:var(--dim); font-size:13px; }
+  #panel .row.done .t { color:var(--dim); text-decoration:line-through; }
+  #panel .row.bad .t { color:#f7768e; }
+  #panel .pair { display:flex; justify-content:space-between; gap:12px; }
+  #panel .pair b { font-weight:500; }
+  #panel .pair b.warn { color:#e0af68; }
+  #panel input {
+    width:calc(100% - 32px); margin:12px 16px; background:var(--bg); color:var(--text);
+    font:inherit; border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+  }
+  #panel input:focus { outline:none; border-color:var(--accent); }
+
   .msg { max-width:80ch; white-space:pre-wrap; overflow-wrap:anywhere; }
   .you { align-self:flex-end; background:var(--accent); color:#0d1117;
          padding:9px 13px; border-radius:14px 14px 3px 14px; }
@@ -52,54 +113,7 @@
     font:inherit; max-height:35vh;
   }
   textarea:focus { outline:none; border-color:var(--accent); }
-
-  /* Overlays: the token gate and the thread picker. Same shell, so they
-     look like one idea rather than two bolted-on panels. */
-  .sheet {
-    position:fixed; inset:0; background:rgba(0,0,0,.6);
-    display:none; align-items:center; justify-content:center; padding:20px;
-  }
-  .sheet[data-open] { display:flex; }
-  .sheet > div {
-    background:var(--panel); border:1px solid var(--line); border-radius:14px;
-    padding:18px; width:100%; max-width:420px; max-height:70dvh; overflow-y:auto;
-  }
-  .sheet h2 { margin:0 0 6px; font-size:15px; font-weight:600; }
-  .sheet p  { margin:0 0 12px; color:var(--dim); font-size:13px; }
-  .sheet input {
-    width:100%; background:var(--bg); color:var(--text); font:inherit;
-    border:1px solid var(--line); border-radius:8px; padding:10px 12px;
-    margin-bottom:10px;
-  }
-  .sheet input:focus { outline:none; border-color:var(--accent); }
-  .row { display:flex; gap:8px; justify-content:flex-end; }
-  .thread {
-    padding:10px 12px; border-radius:8px; cursor:pointer; border:1px solid transparent;
-  }
-  .thread:active { background:var(--line); }
-  .thread b { display:block; font-weight:500; overflow-wrap:anywhere; }
-  .thread span { color:var(--dim); font-size:12px; }
-  /* Tasks are shown, never operated. No pointer, no press state — nothing
-     here should look like it can be ticked off, because it can't be. */
-  .task { display:flex; gap:10px; padding:8px 2px; align-items:baseline; }
-  .task i { font-style:normal; color:var(--dim); }
-  .task.done span { color:var(--dim); text-decoration:line-through; }
-  /* The notices log. Scrolls inside the sheet rather than growing it, since
-     it's the one list with no natural length. */
-  #notice-list { max-height:52dvh; overflow-y:auto; }
-  .notice { padding:8px 2px; border-bottom:1px solid var(--line); }
-  .notice:last-child { border-bottom:0; }
-  .notice b { display:block; font-weight:500; overflow-wrap:anywhere; white-space:pre-wrap; }
-  .notice span { color:var(--dim); font-size:12px; }
-  .notice.bad b { color:#f7768e; }
   sup { color:var(--accent); font-size:10px; margin-left:3px; }
-  .rows { display:grid; grid-template-columns:1fr auto; gap:2px 12px; margin-bottom:14px; }
-  .rows span { color:var(--dim); }
-  .rows b { font-weight:500; text-align:right; }
-  .warn { color:#e0af68; }
-  .danger { background:#5c2b33; }
-  #db-body { max-height:52dvh; overflow-y:auto; }
-  #db-result { margin:10px 0 0; white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -107,9 +121,8 @@
   <b>Sevanya</b>
   <small id="status">ready</small>
   <nav>
-    <button id="new">New</button>
+    <button id="chats">Chats</button>
     <button id="refresh" title="Reload this thread from the server">↻</button>
-    <button id="threads-btn">Threads</button>
     <button id="tasks-btn">Tasks</button>
     <button id="notices-btn">Notices<sup id="notices-count"></sup></button>
     <button id="data-btn">Data</button>
@@ -117,100 +130,13 @@
   </nav>
 </header>
 
+<div id="panel"></div>
 <div id="log"></div>
 
 <footer>
   <textarea id="input" rows="1" placeholder="Ask her something…" autocomplete="off"></textarea>
   <button id="send">Send</button>
 </footer>
-
-<!-- Token entry. There is no browser console on a phone, so this is the only
-     way to get a token into the app on the device it's actually for. -->
-<div class="sheet" id="gate">
-  <div>
-    <h2>Token required</h2>
-    <p>This Sevanya is running with <code>SEVANYA_TOKEN</code> set. Paste the same
-       string here — it's kept on this device and sent with every request.</p>
-    <input id="token-input" type="password" placeholder="SEVANYA_TOKEN"
-           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <div class="row">
-      <button id="gate-cancel">Cancel</button>
-      <button id="gate-save">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- Read-only. Sevanya keeps this list; the UI shows it and nothing more.
-     Adding a tick box here would quietly make it the user's list instead. -->
-<div class="sheet" id="tasks">
-  <div>
-    <h2>Her list for you</h2>
-    <p>Sevanya decides what goes on here and marks things off. You can read it;
-       ask her if something needs to change.</p>
-    <div id="task-list"></div>
-    <div class="row"><button id="tasks-close">Close</button></div>
-  </div>
-</div>
-
-<!-- Read-only, like the task list. A log of what happened, not a queue. -->
-<div class="sheet" id="notices">
-  <div>
-    <h2>Notices</h2>
-    <p>Restarts, dependency checks and errors — things that happened on the
-       machine while you weren't looking at it.</p>
-    <div id="notice-list"></div>
-    <div class="row"><button id="notices-close">Close</button></div>
-  </div>
-</div>
-
-<!-- Maintenance, confirmed here rather than at a terminal on the machine.
-     The whole point is that you're holding a phone. -->
-<div class="sheet" id="data">
-  <div>
-    <h2>Database</h2>
-    <div id="db-body">loading…</div>
-    <p id="db-result"></p>
-    <div class="row">
-      <button id="db-backup">Back up</button>
-      <button id="db-clear" class="danger">Clear chats…</button>
-      <button id="db-close">Close</button>
-    </div>
-  </div>
-</div>
-
-<div class="sheet" id="confirm-clear">
-  <div>
-    <h2>Delete the conversations?</h2>
-    <p id="confirm-clear-detail"></p>
-    <p>Her journal, your task list and the notices are kept. A backup is taken
-       first, and it can't be skipped from here.</p>
-    <div class="row">
-      <button id="confirm-clear-no">Cancel</button>
-      <button id="confirm-clear-yes" class="danger">Delete them</button>
-    </div>
-  </div>
-</div>
-
-<div class="sheet" id="restart">
-  <div>
-    <h2>Restart the server?</h2>
-    <p>The process running on your PC restarts. A reply still streaming is
-       lost; conversations and the task list are on disk and aren't affected.</p>
-    <div class="row">
-      <button id="restart-cancel">Cancel</button>
-      <button id="restart-go">Restart</button>
-    </div>
-  </div>
-</div>
-
-<div class="sheet" id="threads">
-  <div>
-    <h2>Conversations</h2>
-    <p>Including anything asked through Siri.</p>
-    <div id="thread-list"></div>
-    <div class="row"><button id="threads-close">Close</button></div>
-  </div>
-</div>
 
 <script>
 // Installed first, and deliberately in its own block. Anything that throws at
@@ -250,19 +176,21 @@
 const log = document.getElementById('log');
 const input = document.getElementById('input');
 const status = document.getElementById('status');
+const panel = document.getElementById('panel');
+const noticesCount = document.getElementById('notices-count');
+
 // Remembered across reloads so the phone rejoins its own thread, not Siri's.
 let conversationId = Number(localStorage.getItem('conversationId')) || null;
 let busy = false;
 
 // The token, if this Sevanya is running with one. Three ways in, in order:
-// a ?token= in the URL (so a QR code or a Shortcut can carry it), whatever
-// was saved on a previous visit, or the gate below asking for it. The old
+// a ?token= in the URL (so a QR code or a Shortcut can carry it), whatever was
+// saved on a previous visit, or the panel below asking for it. The old
 // instruction to set localStorage from the console is no use on the device
 // this is built for — iOS Safari has no console.
 let token = new URL(location).searchParams.get('token');
 if (token) {
   localStorage.setItem('token', token);
-  // Don't leave it sitting in the address bar or the history entry.
   history.replaceState(null, '', location.pathname);
 } else {
   token = localStorage.getItem('token');
@@ -274,42 +202,13 @@ function authHeaders(extra) {
   return headers;
 }
 
-const gate = document.getElementById('gate');
-const tokenInput = document.getElementById('token-input');
-let onToken = null;   // what to do once a token is entered
-
-function askToken(then) {
-  onToken = then;
-  tokenInput.value = token || '';
-  gate.setAttribute('data-open', '');
-  tokenInput.focus();
-}
-
-bind('gate-save', () => {
-  const value = tokenInput.value.trim();
-  if (!value) return;
-  token = value;
-  localStorage.setItem('token', value);
-  gate.removeAttribute('data-open');
-  const then = onToken; onToken = null;
-  if (then) then();
-});
-bind('gate-cancel', () => {
-  gate.removeAttribute('data-open');
-  onToken = null;
-  status.textContent = 'no token';
-});
-tokenInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gate-save').click(); }
-});
-
 // Wire a handler by id. Doing this directly —
 //   document.getElementById('refresh').onclick = ...
 // — throws "Cannot set properties of null" if the markup and the script
-// disagree about the id, and because that throw is at top level it kills
-// every line after it too: send stops working, the transcript stops loading,
-// the whole page goes inert for one wrong string. This reports the mismatch
-// and carries on binding everything else.
+// disagree about the id, and because that throw is at top level it kills every
+// line after it too: send stops working, the transcript stops loading, the
+// whole page goes inert for one wrong string. This reports the mismatch and
+// carries on binding everything else.
 function bind(id, handler) {
   const el = document.getElementById(id);
   if (!el) {
@@ -320,128 +219,280 @@ function bind(id, handler) {
   el.onclick = handler;
 }
 
+// True when the view is parked at (or near) the newest message. If you've
+// scrolled up to read something, this goes false and we stop dragging you back
+// down every time another chunk arrives — which is what made reading anything
+// mid-reply a fight.
+function atBottom() {
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+}
+
+function followIfAtBottom(wasAtBottom) {
+  if (wasAtBottom) log.scrollTop = log.scrollHeight;
+}
+
 function add(cls, text) {
+  const wasAtBottom = atBottom();
   const el = document.createElement('div');
   el.className = 'msg ' + cls;
   el.textContent = text;
   log.appendChild(el);
-  log.scrollTop = log.scrollHeight;
+  followIfAtBottom(wasAtBottom);
   return el;
 }
 
-input.addEventListener('input', () => {
-  input.style.height = 'auto';
-  input.style.height = input.scrollHeight + 'px';
-});
+// --- the panel -------------------------------------------------------------
+// One component for every list and every question. Opening a second one closes
+// the first, so there is never a stack of things to dismiss.
 
-// Enter sends; Shift+Enter is a newline. On a phone the on-screen keyboard
-// sends Enter as a newline, so the Send button is the real path there.
-input.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-});
-bind('send', send);
-bind('new', () => {
+let openName = null;
+
+function closePanel() {
+  panel.classList.remove('open');
+  panel.innerHTML = '';
+  openName = null;
+}
+
+function head(label, actionLabel, actionFn) {
+  const bar = document.createElement('div');
+  bar.className = 'head';
+
+  const back = document.createElement('button');
+  back.className = 'back';
+  back.textContent = '‹ Back';
+  back.onclick = closePanel;
+
+  const name = document.createElement('span');
+  name.className = 'label';
+  name.textContent = label;
+
+  bar.append(back, name);
+
+  if (actionLabel) {
+    const action = document.createElement('button');
+    action.className = 'act';
+    action.textContent = actionLabel;
+    action.onclick = actionFn;
+    bar.append(action);
+  }
+  return bar;
+}
+
+function body() {
+  const el = document.createElement('div');
+  el.className = 'body';
+  return el;
+}
+
+function note(text, cls) {
+  const el = document.createElement('div');
+  el.className = cls || 'note';
+  el.textContent = text;
+  return el;
+}
+
+function row(title, meta, opts) {
+  const settings = opts || {};
+  const el = document.createElement('div');
+  el.className = 'row' + (settings.cls ? ' ' + settings.cls : '') + (settings.onTap ? ' tap' : '');
+  const t = document.createElement('span');
+  t.className = 't' + (settings.clip ? ' clip' : '');
+  t.textContent = title;
+  el.append(t);
+  if (meta) {
+    const m = document.createElement('span');
+    m.className = 'm';
+    m.textContent = meta;
+    el.append(m);
+  }
+  if (settings.onTap) el.onclick = settings.onTap;
+  return el;
+}
+
+function pair(label, value, warn) {
+  const el = document.createElement('div');
+  el.className = 'row';
+  const line = document.createElement('div');
+  line.className = 'pair';
+  const name = document.createElement('span');
+  name.className = 'm';
+  name.textContent = label;
+  const amount = document.createElement('b');
+  amount.textContent = value;
+  if (warn) amount.className = 'warn';
+  line.append(name, amount);
+  el.append(line);
+  return el;
+}
+
+/** Open a named panel. Tapping the same button again closes it. */
+async function show(name, label, build, actionLabel, actionFn) {
+  if (openName === name) { closePanel(); return; }
+  openName = name;
+  panel.innerHTML = '';
+  panel.append(head(label, actionLabel, actionFn));
+  const content = body();
+  content.append(note('loading…', 'empty'));
+  panel.append(content);
+  panel.classList.add('open');
+
+  try {
+    content.innerHTML = '';
+    await build(content);
+  } catch (err) {
+    content.innerHTML = '';
+    content.append(note(String(err), 'empty'));
+  }
+}
+
+/** Replace just the body of the open panel, keeping it open. */
+function replace(label, build, actionLabel, actionFn) {
+  panel.innerHTML = '';
+  panel.append(head(label, actionLabel, actionFn));
+  const content = body();
+  panel.append(content);
+  build(content);
+}
+
+// Tapping the page behind a desktop dropdown closes it, the way a menu does.
+//
+// Capture phase, deliberately. On the way *down* the clicked element is still
+// in the document; by the time a bubbled listener runs, a row whose handler
+// rebuilt the panel has been detached, so panel.contains(target) is false and
+// this would close the panel the row just opened. That cost an afternoon to
+// see once and is invisible in the code otherwise.
+document.addEventListener('click', e => {
+  if (!panel.classList.contains('open')) return;
+  if (panel.contains(e.target) || e.target.closest('header nav')) return;
+  closePanel();
+}, true);
+
+// --- the token -------------------------------------------------------------
+
+let onToken = null;
+
+function askToken(then) {
+  onToken = then;
+  show('token', 'Token required', content => {
+    content.append(note(
+      'This Sevanya runs with SEVANYA_TOKEN set. Paste the same string — it ' +
+      'stays on this device and is sent with every request.'));
+
+    const field = document.createElement('input');
+    field.id = 'token-input';
+    field.type = 'password';
+    field.placeholder = 'SEVANYA_TOKEN';
+    field.autocomplete = 'off';
+    field.autocapitalize = 'off';
+    field.spellcheck = false;
+    field.value = token || '';
+    field.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); saveToken(field.value); }
+    });
+    content.append(field);
+    field.focus();
+  }, 'Save', () => saveToken(document.getElementById('token-input').value));
+}
+
+function saveToken(value) {
+  value = (value || '').trim();
+  if (!value) return;
+  token = value;
+  localStorage.setItem('token', value);
+  closePanel();
+  const then = onToken; onToken = null;
+  if (then) then();
+}
+
+// --- chats -----------------------------------------------------------------
+
+function newConversation() {
   conversationId = null;
   localStorage.removeItem('conversationId');
   log.innerHTML = '';
+  closePanel();
   status.textContent = 'new conversation';
-});
+}
 
-// Refresh: pull this thread again from the server. Worth having because the
-// transcript can change without this device doing anything — ask Siri
-// something while the page is open and it lands in the database, not in this
-// log. Refresh is how you see it.
-bind('refresh', async () => {
-  if (busy) return;
-  if (!conversationId) { status.textContent = 'nothing to refresh'; return; }
-  status.textContent = 'refreshing…';
-  await restore();
-});
+bind('chats', () => show('chats', 'Recent', async content => {
+  const res = await fetch('/api/conversations', { headers: authHeaders() });
+  if (res.status === 401) { askToken(() => document.getElementById('chats').click()); return; }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
 
-// Reload whatever thread this device was last in.
-async function restore() {
-  if (!conversationId) return;
+  const rows = await res.json();
+  if (!rows.length) { content.append(note('no conversations yet', 'empty')); return; }
+  for (const r of rows) {
+    content.append(row(
+      r.title || '(untitled)',
+      '#' + r.id + ' · ' + r.n + ' messages · ' + r.updated_at,
+      { clip: true, cls: r.id === conversationId ? 'current' : '', onTap: () => openConversation(r.id) }
+    ));
+  }
+}, '+ New', newConversation));
+
+// Load a transcript and make it the active thread. One code path for "show me
+// this conversation", used by the picker, the refresh button and startup, so
+// the three can't drift apart.
+async function openConversation(id) {
+  closePanel();
+  status.textContent = 'loading…';
   try {
-    const res = await fetch('/api/conversations/' + conversationId,
-                            { headers: authHeaders() });
-    if (res.status === 401) { askToken(restore); return; }
+    const res = await fetch('/api/conversations/' + id, { headers: authHeaders() });
+    if (res.status === 401) { askToken(() => openConversation(id)); return; }
     if (res.status === 404) {
-      // The database was reset or the thread is gone. Drop the id rather
-      // than sitting in a conversation the server has never heard of.
+      // The database was reset or the thread is gone. Drop the id rather than
+      // sitting in a conversation the server has never heard of.
       conversationId = null;
       localStorage.removeItem('conversationId');
+      log.innerHTML = '';
       status.textContent = 'new conversation';
-      return;
-    }
-    if (!res.ok) return;
-    log.innerHTML = '';
-    for (const m of await res.json()) add(m.role === 'user' ? 'you' : 'her', m.text);
-    status.textContent = 'conversation ' + conversationId;
-  } catch (_) { /* offline or server down — start clean */ }
-}
-restore();
-
-// --- thread picker -------------------------------------------------------
-// The server has always exposed /api/conversations; nothing was calling it,
-// so there was no way to get back to yesterday's thread from the phone.
-const threads = document.getElementById('threads');
-const threadList = document.getElementById('thread-list');
-
-bind('threads-close', () => threads.removeAttribute('data-open'));
-threads.onclick = e => { if (e.target === threads) threads.removeAttribute('data-open'); };
-gate.onclick = e => { if (e.target === gate) document.getElementById('gate-cancel').click(); };
-
-// --- the task list, read-only ---------------------------------------------
-// She writes it, we display it. There is deliberately no way to tick one off
-// from here: it's her list of what you should do, and a checkbox in this panel
-// would turn it into yours.
-const tasksSheet = document.getElementById('tasks');
-const taskList = document.getElementById('task-list');
-
-bind('tasks-close', () => tasksSheet.removeAttribute('data-open'));
-tasksSheet.onclick = e => { if (e.target === tasksSheet) tasksSheet.removeAttribute('data-open'); };
-
-bind('tasks-btn', async () => {
-  taskList.textContent = 'loading…';
-  tasksSheet.setAttribute('data-open', '');
-  try {
-    const res = await fetch('/api/tasks', { headers: authHeaders() });
-    if (res.status === 401) {
-      tasksSheet.removeAttribute('data-open');
-      askToken(() => document.getElementById('tasks-btn').click());
       return;
     }
     if (!res.ok) throw new Error('HTTP ' + res.status);
 
-    const rows = await res.json();
-    taskList.innerHTML = '';
-    if (!rows.length) { taskList.textContent = 'nothing on it yet'; return; }
-
-    for (const row of rows) {
-      const el = document.createElement('div');
-      el.className = row.done ? 'task done' : 'task';
-      const mark = document.createElement('i');
-      mark.textContent = row.done ? '✓' : '•';
-      const text = document.createElement('span');
-      text.textContent = row.task;
-      el.append(mark, text);
-      taskList.appendChild(el);
-    }
+    log.innerHTML = '';
+    for (const m of await res.json()) add(m.role === 'user' ? 'you' : 'her', m.text);
+    conversationId = id;
+    localStorage.setItem('conversationId', id);
+    status.textContent = 'conversation ' + id;
+    log.scrollTop = log.scrollHeight;
   } catch (err) {
-    taskList.textContent = String(err);
+    add('err', String(err));
+    status.textContent = 'ready';
   }
+}
+
+bind('refresh', () => {
+  // Worth having because the transcript changes without this device doing
+  // anything — ask Siri something with the page open and it lands in the
+  // database, not in this log.
+  if (busy) return;
+  if (!conversationId) { status.textContent = 'nothing to refresh'; return; }
+  openConversation(conversationId);
 });
 
-// --- notices, read-only ----------------------------------------------------
-// A log of what happened to her: restarts, dependency checks, errors. Scrolls
-// inside its sheet; nothing here is clickable, because there's nothing to do
-// to a log entry.
-const noticesSheet = document.getElementById('notices');
-const noticeList = document.getElementById('notice-list');
-const noticesCount = document.getElementById('notices-count');
+if (conversationId) openConversation(conversationId);
 
-bind('notices-close', () => noticesSheet.removeAttribute('data-open'));
-noticesSheet.onclick = e => { if (e.target === noticesSheet) noticesSheet.removeAttribute('data-open'); };
+// --- her list, read-only ---------------------------------------------------
+// She writes it; we display it. There is deliberately no way to tick one off
+// from here: it's her list of what you should do, and a checkbox would make it
+// yours.
+
+bind('tasks-btn', () => show('tasks', 'Her list', async content => {
+  const res = await fetch('/api/tasks', { headers: authHeaders() });
+  if (res.status === 401) { askToken(() => document.getElementById('tasks-btn').click()); return; }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+
+  const rows = await res.json();
+  content.append(note('She decides what goes on here and marks things off. ' +
+                      'Ask her if something needs to change.'));
+  if (!rows.length) { content.append(note('nothing on it yet', 'empty')); return; }
+  for (const r of rows) {
+    content.append(row((r.done ? '✓  ' : '•  ') + r.task, null, { cls: r.done ? 'done' : '' }));
+  }
+}));
+
+// --- notices, read-only ----------------------------------------------------
 
 async function loadNotices() {
   const res = await fetch('/api/notifications', { headers: authHeaders(), cache: 'no-store' });
@@ -450,14 +501,9 @@ async function loadNotices() {
   return res.json();
 }
 
-// How many have arrived since this device last opened the panel. Kept here
-// rather than on the server: "seen" is a property of this phone, not of the
-// notice, and marking one read would be a write to a read-only log.
-function markSeen(rows) {
-  if (rows.length) localStorage.setItem('lastNotice', rows[0].id);
-  noticesCount.textContent = '';
-}
-
+// How many have arrived since this device last looked. Kept here rather than
+// on the server: "seen" is a property of this phone, not of the notice, and
+// marking one read would be a write to a read-only log.
 async function refreshNoticeCount() {
   try {
     const rows = await loadNotices();
@@ -465,141 +511,90 @@ async function refreshNoticeCount() {
     const seen = Number(localStorage.getItem('lastNotice')) || 0;
     const fresh = rows.filter(r => r.id > seen).length;
     noticesCount.textContent = fresh ? String(fresh) : '';
-  } catch (_) { /* offline — the count is not worth an error line */ }
+  } catch (_) { /* offline — not worth an error line */ }
 }
 
-bind('notices-btn', async () => {
-  noticeList.textContent = 'loading…';
-  noticesSheet.setAttribute('data-open', '');
-  try {
-    const rows = await loadNotices();
-    if (rows === null) {
-      noticesSheet.removeAttribute('data-open');
-      askToken(() => document.getElementById('notices-btn').click());
-      return;
-    }
-    noticeList.innerHTML = '';
-    if (!rows.length) { noticeList.textContent = 'nothing yet'; return; }
-
-    for (const row of rows) {
-      const el = document.createElement('div');
-      el.className = row.kind.endsWith('failed') ? 'notice bad' : 'notice';
-      const message = document.createElement('b');
-      message.textContent = row.message;
-      const meta = document.createElement('span');
-      meta.textContent = `${row.created_at} · ${row.kind}`;
-      el.append(message, meta);
-      noticeList.appendChild(el);
-    }
-    markSeen(rows);
-  } catch (err) {
-    noticeList.textContent = String(err);
+bind('notices-btn', () => show('notices', 'Notices', async content => {
+  const rows = await loadNotices();
+  if (rows === null) { askToken(() => document.getElementById('notices-btn').click()); return; }
+  if (!rows.length) { content.append(note('nothing yet', 'empty')); return; }
+  for (const r of rows) {
+    content.append(row(r.message, r.created_at + ' · ' + r.kind,
+                       { cls: r.kind.endsWith('failed') ? 'bad' : '' }));
   }
-});
+  localStorage.setItem('lastNotice', rows[0].id);
+  noticesCount.textContent = '';
+}));
 
 refreshNoticeCount();
 
 // --- the database ----------------------------------------------------------
-// Everything `python -m sevanya.db check` prints, and the two actions worth
-// having, confirmed here. Standing at the machine to answer a terminal prompt
-// defeats the point of the phone.
-const dataSheet = document.getElementById('data');
-const dbBody = document.getElementById('db-body');
-const dbResult = document.getElementById('db-result');
-const confirmClear = document.getElementById('confirm-clear');
+
 let dbState = null;
 
-bind('db-close', () => dataSheet.removeAttribute('data-open'));
-dataSheet.onclick = e => { if (e.target === dataSheet) dataSheet.removeAttribute('data-open'); };
-confirmClear.onclick = e => { if (e.target === confirmClear) confirmClear.removeAttribute('data-open'); };
-
-function row(label, value, cls) {
-  const name = document.createElement('span');
-  name.textContent = label;
-  const amount = document.createElement('b');
-  amount.textContent = value;
-  if (cls) amount.className = cls;
-  return [name, amount];
-}
-
 async function loadDb() {
-  dbBody.textContent = 'loading…';
   const res = await fetch('/api/db', { headers: authHeaders(), cache: 'no-store' });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
-function renderDb(state) {
+function renderDb(content, state) {
   dbState = state;
-  dbBody.innerHTML = '';
-
-  const grid = document.createElement('div');
-  grid.className = 'rows';
   for (const [table, count] of Object.entries(state.counts)) {
-    grid.append(...row(table.replace('_', ' '), count));
+    content.append(pair(table.replace('_', ' '), String(count)));
   }
-  dbBody.appendChild(grid);
+  content.append(pair('schema version',
+    state.schema_version + ' / ' + state.schema_expects,
+    state.schema_version !== state.schema_expects));
+  if (state.pending_migrations.length) {
+    content.append(pair('pending migrations',
+      state.pending_migrations.length + ' — press ⏻ to apply', true));
+  }
+  if (state.drift.length) content.append(pair('SCHEMA DRIFT', state.drift.join('; '), true));
+  content.append(pair('unloadable messages', String(state.unloadable), state.unloadable > 0));
+  content.append(pair('backups', state.backups.length ? state.backups[0].name : 'none yet'));
 
-  const notes = document.createElement('div');
-  notes.className = 'rows';
-  notes.append(...row('schema version',
-    `${state.schema_version} / ${state.schema_expects}`,
-    state.schema_version === state.schema_expects ? '' : 'warn'));
-  if (state.pending_migrations.length)
-    notes.append(...row('pending migrations',
-      state.pending_migrations.length + ' — press ⏻ to apply', 'warn'));
-  if (state.drift.length)
-    notes.append(...row('SCHEMA DRIFT', state.drift.join('; '), 'warn'));
-  notes.append(...row('unloadable messages', state.unloadable,
-    state.unloadable ? 'warn' : ''));
-  notes.append(...row('backups', state.backups.length
-    ? state.backups[0].name : 'none yet'));
-  dbBody.appendChild(notes);
+  content.append(row('Clear chats…', 'deletes conversations, keeps her journal and your list',
+                     { cls: 'bad', onTap: confirmClear }));
 }
 
-bind('data-btn', async () => {
-  dbResult.textContent = '';
-  dataSheet.setAttribute('data-open', '');
-  try {
+async function openDb() {
+  await show('db', 'Database', async content => {
     const state = await loadDb();
-    if (state === null) {
-      dataSheet.removeAttribute('data-open');
-      askToken(() => document.getElementById('data-btn').click());
-      return;
-    }
-    renderDb(state);
-  } catch (err) {
-    dbBody.textContent = String(err);
-  }
-});
+    if (state === null) { askToken(openDb); return; }
+    renderDb(content, state);
+  }, 'Back up', backupNow);
+}
 
-bind('db-backup', async () => {
-  dbResult.textContent = 'backing up…';
+bind('data-btn', openDb);
+
+async function backupNow() {
   try {
     const res = await fetch('/api/db/backup', { method: 'POST', headers: authHeaders() });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const saved = await res.json();
-    dbResult.textContent = `backed up to ${saved.name} (${saved.bytes.toLocaleString()} bytes)`;
-    renderDb(await loadDb());
+    status.textContent = 'backed up ' + saved.name;
+    openName = null;
+    await openDb();
   } catch (err) {
-    dbResult.textContent = 'backup failed: ' + err;
+    add('err', 'backup failed: ' + err);
   }
-});
+}
 
-bind('db-clear', () => {
+// Deleting history is a second, deliberate step. The row above only brings you
+// here; nothing is removed until the action in this head is pressed.
+function confirmClear() {
   if (!dbState) return;
-  document.getElementById('confirm-clear-detail').textContent =
-    `${dbState.counts.conversations} conversations and ${dbState.counts.messages} ` +
-    `messages will be deleted.`;
-  confirmClear.setAttribute('data-open', '');
-});
+  replace('Delete chats?', content => {
+    content.append(note(
+      dbState.counts.conversations + ' conversations and ' + dbState.counts.messages +
+      ' messages will be deleted. Her journal, your task list and the notices are ' +
+      'kept. A backup is taken first, and it cannot be skipped from here.'));
+  }, 'Delete them', clearNow);
+}
 
-bind('confirm-clear-no', () => confirmClear.removeAttribute('data-open'));
-
-bind('confirm-clear-yes', async () => {
-  confirmClear.removeAttribute('data-open');
-  dbResult.textContent = 'clearing…';
+async function clearNow() {
   try {
     const res = await fetch('/api/db/clear-history', {
       method: 'POST',
@@ -611,40 +606,38 @@ bind('confirm-clear-yes', async () => {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const done = await res.json();
 
-    dbResult.textContent =
-      `removed ${done.removed.conversations} conversations and ` +
-      `${done.removed.messages} messages — backup ${done.backup}`;
-    renderDb(await loadDb());
-
-    // The thread this device was in no longer exists. Drop it and clear the
-    // log, rather than leaving the page showing a transcript the server has
-    // just forgotten.
+    closePanel();
+    // The thread this device was in no longer exists.
     conversationId = null;
     localStorage.removeItem('conversationId');
     log.innerHTML = '';
+    add('tool', 'removed ' + done.removed.conversations + ' conversations and ' +
+                done.removed.messages + ' messages — backup ' + done.backup);
     status.textContent = 'history cleared';
   } catch (err) {
-    dbResult.textContent = 'clear failed: ' + err;
+    add('err', 'clear failed: ' + err);
   }
-});
+}
 
-// --- restarting the server -------------------------------------------------
-const restartSheet = document.getElementById('restart');
+// --- restarting ------------------------------------------------------------
 
-bind('restart-btn', () => restartSheet.setAttribute('data-open', ''));
-bind('restart-cancel', () => restartSheet.removeAttribute('data-open'));
-restartSheet.onclick = e => { if (e.target === restartSheet) restartSheet.removeAttribute('data-open'); };
+bind('restart-btn', () => show('restart', 'Restart', content => {
+  content.append(note(
+    'The process on your PC restarts, picking up code and requirement changes. ' +
+    'A reply still streaming is lost; conversations, her journal and the task ' +
+    'list are on disk and unaffected.'));
+}, 'Restart now', restartNow));
 
 async function health() {
-  // cache: no-store, or a phone will happily answer from cache and tell you
-  // the server is up while it's still restarting.
+  // cache: no-store, or a phone will answer from cache and tell you the server
+  // is up while it's still restarting.
   const res = await fetch('/api/health', { headers: authHeaders(), cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
-bind('restart-go', async () => {
-  restartSheet.removeAttribute('data-open');
+async function restartNow() {
+  closePanel();
   status.textContent = 'restarting…';
 
   let before = null;
@@ -652,7 +645,7 @@ bind('restart-go', async () => {
 
   try {
     const res = await fetch('/api/restart', { method: 'POST', headers: authHeaders() });
-    if (res.status === 401) { askToken(() => document.getElementById('restart-go').click()); return; }
+    if (res.status === 401) { askToken(restartNow); return; }
     if (!res.ok) throw new Error('HTTP ' + res.status);
   } catch (err) {
     add('err', 'could not ask it to restart: ' + err);
@@ -669,63 +662,38 @@ bind('restart-go', async () => {
     try {
       const now = await health();
       if (before === null || now.started > before) {
-        // A full reload rather than just re-syncing the transcript: the point
-        // of a reload is usually that the code on disk changed, and this page
-        // is part of the code. restore() would leave the old HTML and script
-        // running against a new server.
+        // A full reload rather than re-syncing: the usual reason to restart is
+        // that the code on disk changed, and this page is part of that code.
         status.textContent = 'restarted';
         location.reload();
         return;
       }
-    } catch (_) { /* still down — that's expected for a moment */ }
+    } catch (_) { /* still down — expected for a moment */ }
   }
   add('err', 'the server did not come back within 30s — check the machine it runs on');
   status.textContent = 'offline';
+}
+
+// --- talking to her --------------------------------------------------------
+
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = input.scrollHeight + 'px';
 });
 
-bind('threads-btn', async () => {
-  threadList.textContent = 'loading…';
-  threads.setAttribute('data-open', '');
-  try {
-    const res = await fetch('/api/conversations', { headers: authHeaders() });
-    if (res.status === 401) {
-      threads.removeAttribute('data-open');
-      askToken(() => document.getElementById('threads-btn').click());
-      return;
-    }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-
-    const rows = await res.json();
-    threadList.innerHTML = '';
-    if (!rows.length) { threadList.textContent = 'nothing yet'; return; }
-
-    for (const row of rows) {
-      const el = document.createElement('div');
-      el.className = 'thread';
-      const title = document.createElement('b');
-      title.textContent = row.title || '(untitled)';
-      const meta = document.createElement('span');
-      meta.textContent = `${row.updated_at} · ${row.n} messages`;
-      el.append(title, meta);
-      el.onclick = () => {
-        conversationId = row.id;
-        localStorage.setItem('conversationId', row.id);
-        threads.removeAttribute('data-open');
-        log.innerHTML = '';
-        restore();
-      };
-      threadList.appendChild(el);
-    }
-  } catch (err) {
-    threadList.textContent = String(err);
-  }
+// Enter sends; Shift+Enter is a newline. On a phone the on-screen keyboard
+// sends Enter as a newline, so the Send button is the real path there.
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
+bind('send', send);
 
 async function send() {
   const message = input.value.trim();
   if (!message || busy) return;
 
   busy = true;
+  closePanel();
   const echo = add('you', message);
   input.value = '';
   input.style.height = 'auto';
@@ -740,8 +708,8 @@ async function send() {
     });
     if (res.status === 401) {
       // Ask for the token and resend once it's in — losing what you typed to
-      // an auth prompt is the kind of thing that makes you stop using it.
-      // The retry re-echoes the message, so drop this bubble first.
+      // an auth prompt is the kind of thing that makes you stop using it. The
+      // retry re-echoes the message, so drop this bubble first.
       echo.remove();
       status.textContent = 'token needed';
       askToken(() => { input.value = message; send(); });
@@ -774,9 +742,10 @@ async function send() {
           localStorage.setItem('conversationId', ev.id);
           status.textContent = 'conversation ' + ev.id;
         } else if (ev.type === 'text') {
+          const wasAtBottom = atBottom();
           if (!bubble) bubble = add('her', '');
           bubble.textContent += ev.text;
-          log.scrollTop = log.scrollHeight;
+          followIfAtBottom(wasAtBottom);
         } else if (ev.type === 'tool') {
           add('tool', '[' + ev.text + ']');
           bubble = null;           // any text after a tool starts a new bubble
@@ -792,6 +761,7 @@ async function send() {
     // the retry calls send() again and would bounce off a stale busy flag.
     busy = false;
     if (status.textContent === 'thinking…') status.textContent = 'ready';
+    refreshNoticeCount();
   }
 }
 </script>

@@ -44,6 +44,21 @@ python -m sevanya              # the server: checks requirements, then serves
 Set `SEVANYA_SKIP_DEPS=1` to start without checking, for working offline or
 managing the environment yourself. `SEVANYA_PORT` moves it off 8765.
 
+### The UI
+
+One panel, opened by the buttons in the header: **Chats** (Recent, with `+ New`),
+**↻**, **Tasks**, **Notices**, **Data**, **⏻**. A dropdown under the header on a
+desktop; a page covering the screen on a phone.
+
+The way out is **‹ Back**, top left, and it stays put while the list scrolls
+under it. There is no Close at the bottom — that's where it used to be, at the
+end of a long list you had to scroll through to escape. On a desktop the button
+that opened a panel toggles it shut and clicking away closes it, so Back only
+appears where the header is covered.
+
+Opening a second panel replaces the first; there is never a pile of overlays to
+dismiss one at a time.
+
 Mid-conversation, `/rc` brings the web server up without leaving — started in
 the directory you're already in, so the phone sees the same files the terminal
 does. Every other slash command still goes to her; `/show` is hers, `/rc` is
@@ -431,6 +446,25 @@ lose the newest notes — in the test that pins this, with the WAL never
 checkpointed, the naive copy has **no tables at all**. `store.backup()` uses
 SQLite's own backup, which folds the WAL in and is safe while something else is
 writing.
+
+## A branch that is not coming back
+
+`claude/coding-ai-kd52zq` built the server and web UI in parallel with this
+one, from a common ancestor before Stage 3. Every Python change on it is
+already here in a superset — same six tools and six endpoints, plus seven more
+of each — and `server.py`, `index.html` and `manifest.json` conflict as
+add/add, because both branches wrote them from scratch. Merging it isn't a
+merge; it's choosing one of two implementations, 44 hunks at a time.
+
+It isn't wasted, though. Four things on it were better and are now here:
+
+- the transcript no longer drags you to the bottom when you've scrolled up to
+  read something mid-reply — a real bug, not a preference
+- `overscroll-behavior:none`, so iOS stops rubber-banding the page
+- the viewport lock, so tapping the input doesn't zoom the page
+- the whole panel design: Chats/Recent, Back in the header, no bottom Close
+
+**Don't merge it.** Everything worth having has been taken.
 
 ## Notes to self
 
