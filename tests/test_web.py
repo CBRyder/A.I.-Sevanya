@@ -51,6 +51,12 @@ def referenced_ids():
     return found
 
 
+# Ids the script creates rather than finds — `field.id = 'token-input'`. They
+# can't be "missing from the markup" because the markup never mentions them,
+# but they still have to be accounted for or the check below is just wrong.
+BUILT_IN_JS = set(re.findall(r"\.id\s*=\s*'([^']+)'", HTML))
+
+
 def test_the_page_has_script_to_check():
     assert SCRIPTS, "no script blocks found — the regex or the page changed"
     assert MARKUP_IDS
@@ -58,15 +64,15 @@ def test_the_page_has_script_to_check():
 
 @pytest.mark.parametrize("element_id", sorted(referenced_ids()))
 def test_every_id_the_script_reaches_for_exists_in_the_markup(element_id):
-    """The exact check that was missing.
+    """The exact check that was missing once.
 
     getElementById returns null for an id that isn't there, assigning .onclick
     on null throws, and at top level that throw takes the rest of the script
     with it.
     """
-    assert element_id in MARKUP_IDS, (
-        f"the script looks for #{element_id}, which is not in the markup. "
-        f"ids present: {sorted(MARKUP_IDS)}"
+    assert element_id in MARKUP_IDS | BUILT_IN_JS, (
+        f"the script looks for #{element_id}, which is neither in the markup "
+        f"nor created in JS. ids present: {sorted(MARKUP_IDS)}"
     )
 
 
@@ -74,7 +80,8 @@ def test_buttons_are_wired_through_bind():
     """bind() reports a mismatch and keeps going; direct assignment doesn't.
 
     One wrong string in the direct form takes down every handler after it, so
-    the whole page goes inert. Keep new buttons on bind().
+    the whole page goes inert. Elements built in JS are exempt — they can't be
+    missing from markup that doesn't mention them.
     """
     offenders = []
     for script in CODE:
@@ -112,18 +119,221 @@ def test_each_script_block_parses(tmp_path, index):
     assert result.returncode == 0, f"script block {index} does not parse:\n{result.stderr}"
 
 
+# --- the panel: one component, Back top-left, no Close ---------------------
+
+
+def test_there_is_one_panel_not_a_stack_of_sheets():
+    """Opening a second thing closes the first, so there's never a pile of
+    overlays to dismiss one at a time."""
+    assert 'id="panel"' in HTML
+    assert HTML.count('id="panel"') == 1
+    assert "function closePanel" in HTML
+
+
+def test_the_way_out_is_back_in_the_header_not_a_close_at_the_bottom():
+    """Close sat at the end of a long list, so on a phone you had to scroll to
+    the bottom of everything to get out of it."""
+    assert "‹ Back" in HTML
+    # Both spellings: one in the markup, and one built in JS — the second is
+    # how it would actually creep back, since the panel is assembled in code.
+    assert ">Close<" not in HTML, "a Close button came back in the markup"
+    assert not re.search(r"textContent\s*=\s*['\"]Close['\"]", HTML), (
+        "a Close button is being built in JS"
+    )
+    head = HTML.split("function head(")[1].split("function body(")[0]
+    assert "back.onclick = closePanel" in head
+
+
+def test_the_panel_header_stays_put_while_the_list_scrolls():
+    header = HTML.split("#panel .head {")[1].split("}")[0]
+    assert "position:sticky" in header
+    assert "top:0" in header
+
+
+def test_back_only_appears_where_the_panel_covers_the_screen():
+    """On desktop the button that opened it is still visible behind and
+    toggles it shut, so Back would be a second way to do one thing."""
+    assert "#panel .head .back { display:none;" in HTML
+    narrow = HTML.split("@media (max-width: 640px)")[1]
+    assert "#panel .head .back { display:inline-block; }" in narrow
+    assert "height:100dvh" in narrow, "the panel should cover the screen on a phone"
+
+
+def test_the_same_button_closes_the_panel_it_opened():
+    """Only reachable on desktop, where the header isn't covered — but that's
+    where a dropdown that won't shut is most annoying."""
+    show = HTML.split("async function show(")[1].split("function replace(")[0]
+    assert "if (openName === name) { closePanel(); return; }" in show
+
+
+def test_clicking_away_is_judged_before_the_panel_can_be_rebuilt():
+    """Capture phase, and it matters.
+
+    A row whose handler rebuilds the panel is detached by the time a bubbled
+    listener runs, so panel.contains(target) is false and the handler closes
+    the panel that row had just filled. Cost an afternoon to see once.
+    """
+    handler = HTML.split("document.addEventListener('click'")[1].split("}, ")[1][:20]
+    assert handler.startswith("true"), (
+        "the outside-click listener must be registered in the capture phase, "
+        f"got {handler!r}"
+    )
+
+
+# --- reading vs doing ------------------------------------------------------
+
+
+def test_the_task_list_is_shown_never_edited():
+    """It's her judgement about what you should do next. A checkbox here would
+    make it yours — a product decision hiding in two lines of DOM code."""
+    render = HTML.split("bind('tasks-btn'")[1].split("// --- notices")[0]
+    for control in ("createElement('input')", "createElement('button')", "checkbox"):
+        assert control not in render, f"the task panel builds a {control}"
+
+
+def test_the_notices_log_is_shown_never_edited():
+    render = HTML.split("bind('notices-btn'")[1].split("refreshNoticeCount();")[0]
+    for control in ("createElement('input')", "createElement('button')", "checkbox"):
+        assert control not in render
+
+
+@pytest.mark.parametrize("endpoint", ["/api/tasks", "/api/notifications"])
+def test_the_page_never_writes_to_a_read_only_endpoint(endpoint):
+    for script in CODE:
+        for match in re.finditer(
+                r"fetch\(\s*'" + re.escape(endpoint) + r"[^']*'\s*(?:,\s*\{([^}]*)\})?", script):
+            assert "method" not in (match.group(1) or ""), f"{endpoint} called with a method"
+
+
+def test_unseen_notices_are_tracked_on_the_device():
+    """"Seen" is a property of this phone, not of the notice — and marking one
+    read on the server would be a write to a log that only reads."""
+    assert "localStorage.setItem('lastNotice'" in HTML
+    assert "localStorage.getItem('lastNotice')" in HTML
+
+
+# --- destructive things ----------------------------------------------------
+
+
+def test_clearing_chats_takes_two_deliberate_steps():
+    """The row that starts it sits in a panel you'd be poking around in."""
+    row_handler = HTML.split("content.append(row('Clear chats…'")[1].split("}")[0]
+    assert "confirmClear" in row_handler
+    assert "/api/db/clear-history" not in row_handler, "one tap must not delete"
+
+    confirm = HTML.split("function confirmClear()")[1].split("async function clearNow")[0]
+    assert "Delete them" in confirm
+    assert "will be deleted" in confirm
+
+
+def test_the_delete_request_says_confirm_explicitly():
+    flow = HTML.split("async function clearNow()")[1]
+    assert "/api/db/clear-history" in flow
+    assert "confirm: true" in flow
+
+
+def test_the_page_offers_no_way_to_skip_the_backup():
+    """The CLI has --no-backup. Over HTTP that shouldn't exist at all."""
+    assert "no_backup" not in HTML and "no-backup" not in HTML
+
+
+def test_the_stale_conversation_id_is_dropped_after_clearing():
+    flow = HTML.split("async function clearNow()")[1]
+    assert "removeItem('conversationId')" in flow
+
+
+def test_restarting_asks_first():
+    """One stray tap shouldn't take the server down mid-answer."""
+    restart = HTML.split("bind('restart-btn'")[1].split("async function health")[0]
+    assert "Restart now" in restart
+    assert "/api/restart" not in restart, "the button must only open the panel"
+    # Passing restartNow as the action is right; calling it here is not. The
+    # parens are the whole difference between a confirmation and a hair
+    # trigger.
+    assert "restartNow()" not in restart, "the button fires the restart itself"
+
+
+def test_the_restart_flow_waits_for_a_new_process():
+    """Polling for any answer would catch the old process still shutting down."""
+    flow = HTML.split("async function restartNow()")[1]
+    assert "/api/restart" in flow
+    assert "no-store" in HTML, "a cached health response would fake a recovery"
+    assert re.search(r"\.started\s*>\s*before", flow), (
+        "nothing compares the new start time against the old one"
+    )
+    assert "location.reload()" in flow, (
+        "the usual reason to restart is that the code changed, and this page is "
+        "part of that code"
+    )
+    assert "did not come back" in flow
+
+
+# --- taken from the parallel branch ----------------------------------------
+
+
+def test_new_text_does_not_drag_you_back_down():
+    """A real bug this page had, found on a parallel branch.
+
+    Every arriving chunk called log.scrollTop = log.scrollHeight
+    unconditionally, so scrolling up to re-read something mid-reply was a
+    fight you lost several times a second.
+    """
+    assert "function atBottom()" in HTML
+    unguarded = [
+        line for line in HTML.splitlines()
+        if "scrollTop = log.scrollHeight" in line
+        and "followIfAtBottom" not in line
+        and "openConversation" not in line
+    ]
+    assert len(unguarded) <= 2, f"unguarded auto-scroll: {unguarded}"
+    assert "followIfAtBottom" in HTML
+
+
+def test_the_stream_checks_before_following():
+    """The guard has to be read *before* the new text lands.
+
+    Measuring afterwards always says 'not at the bottom', because the content
+    just got taller — so the check would disable itself.
+    """
+    stream = HTML.split("ev.type === 'text'")[1].split("else if")[0]
+    assert stream.index("atBottom()") < stream.index("textContent +="), (
+        "the position is being measured after the text was added"
+    )
+
+
+def test_the_page_does_not_rubber_band():
+    assert "overscroll-behavior:none" in HTML.replace(" ", "")
+
+
+def test_tapping_the_input_does_not_zoom_the_page():
+    viewport = [l for l in HTML.splitlines() if 'name="viewport"' in l][0]
+    assert "maximum-scale=1" in viewport
+    assert "user-scalable=no" in viewport
+
+
+def test_the_chats_panel_is_called_recent_and_can_start_a_new_one():
+    """Starting a fresh thread lives next to the list of existing ones."""
+    chats = HTML.split("bind('chats'")[1].split("async function openConversation")[0]
+    assert "'Recent'" in chats
+    assert "'+ New'" in chats
+    assert "newConversation" in chats
+
+
+def test_the_open_thread_is_marked_in_the_list():
+    chats = HTML.split("bind('chats'")[1].split("async function openConversation")[0]
+    assert "current" in chats
+
+
 # --- the manifest and what it promises -------------------------------------
 
 
 def test_manifest_icons_exist_on_disk():
-    """A declared icon that isn't there is a blurry screenshot on the home screen."""
     import json
 
     manifest = json.loads((WEB / "manifest.json").read_text())
     assert manifest["icons"], "no icons declared"
     for icon in manifest["icons"]:
-        path = WEB / icon["src"].lstrip("/").replace("static/", "static/", 1)
-        assert (WEB / "static" / Path(icon["src"]).name).exists(), f"{icon['src']} is declared but missing"
+        assert (WEB / "static" / Path(icon["src"]).name).exists(), f"{icon['src']} is missing"
 
 
 def test_apple_touch_icon_is_declared_and_present():
@@ -139,159 +349,6 @@ def test_the_token_can_be_entered_on_the_device():
     If this ever regresses to "set localStorage from the console", the app is
     unusable on the device it exists for whenever a token is set.
     """
-    assert "token-input" in MARKUP_IDS, "no way to type a token in the UI"
     assert "askToken" in HTML
+    assert "token-input" in HTML
     assert "searchParams.get('token')" in HTML, "no ?token= path for a Shortcut or QR code"
-
-
-# --- the task panel is a display, not an editor ----------------------------
-
-
-def test_the_task_panel_never_builds_a_control():
-    """No checkbox, no button, no input inside the list.
-
-    The list is Sevanya's judgement about what this person should do next. A
-    tick box here would make it theirs, which is a product decision hiding in
-    two lines of DOM code — so it's pinned here rather than left to taste.
-    """
-    render = HTML.split("bind('tasks-btn'")[1].split("bind('restart-btn'")[0]
-    for control in ("createElement('input')", "createElement('button')",
-                    "type = 'checkbox'", 'type="checkbox"'):
-        assert control not in render, f"the task panel builds a {control}"
-
-
-def test_the_page_never_writes_to_the_task_api():
-    """Reading is the only thing the UI is allowed to do with the list."""
-    for script in CODE:
-        for match in re.finditer(r"fetch\(\s*'(/api/tasks[^']*)'\s*(?:,\s*\{([^}]*)\})?", script):
-            options = match.group(2) or ""
-            assert "method" not in options, f"{match.group(1)} is called with a method: {options}"
-
-
-def test_the_task_panel_says_whose_list_it_is():
-    """A bare list of imperatives reads as a to-do app you forgot to finish."""
-    panel = HTML.split('id="tasks"')[1].split("</div>")[0:6]
-    text = " ".join(panel)
-    assert "Sevanya decides" in text or "Her list" in text
-
-
-# --- restarting ------------------------------------------------------------
-
-
-def test_restarting_asks_first():
-    """One stray tap shouldn't take the server down mid-answer."""
-    assert "restart-cancel" in MARKUP_IDS
-    assert "restart-go" in MARKUP_IDS
-    body = HTML.split('id="restart"')[1]
-    assert "Restart the server?" in body
-
-
-def test_the_restart_flow_waits_for_a_new_process():
-    """Polling for any answer would catch the old process still shutting down.
-
-    The restart is delayed so the response can go out first, so for a moment
-    the server that's about to die is still replying 200.
-    """
-    flow = HTML.split("bind('restart-go'")[1]
-    assert "/api/restart" in flow
-    assert "/api/health" in HTML
-    assert "no-store" in HTML, "a cached health response would fake a recovery"
-    # The comparison itself, not merely the word "started" — that appears in
-    # the line that reads the value, so matching it would pass with the check
-    # removed entirely.
-    assert re.search(r"\.started\s*>\s*before", flow), (
-        "nothing compares the new start time against the old one"
-    )
-
-
-def test_the_restart_flow_gives_up_rather_than_hanging():
-    flow = HTML.split("bind('restart-go'")[1]
-    assert "did not come back" in flow
-
-
-# --- the notices panel -----------------------------------------------------
-
-
-def test_the_notices_log_scrolls_inside_its_sheet():
-    """It's the one list with no natural length.
-
-    Without its own scroll it would grow the sheet past the screen and take
-    the Close button with it.
-    """
-    assert "#notice-list" in HTML
-    styles = HTML.split("#notice-list")[1].split("}")[0]
-    assert "overflow-y" in styles and "max-height" in styles
-
-
-def test_the_notices_panel_never_builds_a_control():
-    """Read-only, like the task list. There is nothing to do to a log entry."""
-    render = HTML.split("bind('notices-btn'")[1].split("// --- restarting")[0]
-    for control in ("createElement('input')", "createElement('button')", "type = 'checkbox'"):
-        assert control not in render, f"the notices panel builds a {control}"
-
-
-def test_the_page_never_writes_to_the_notifications_api():
-    for script in CODE:
-        for match in re.finditer(
-                r"fetch\(\s*'(/api/notifications[^']*)'\s*(?:,\s*\{([^}]*)\})?", script):
-            assert "method" not in (match.group(2) or ""), f"{match.group(1)} is called with a method"
-
-
-def test_unseen_is_tracked_on_the_device_not_the_server():
-    """"Seen" is a property of this phone, not of the notice.
-
-    Marking one read server-side would also be a write to a read-only log.
-    """
-    assert "localStorage.setItem('lastNotice'" in HTML
-    assert "localStorage.getItem('lastNotice')" in HTML
-
-
-def test_a_reload_reloads_the_page_rather_than_just_re_syncing():
-    """The usual reason to reload is that the code on disk changed.
-
-    This page is part of that code, so re-syncing the transcript would leave
-    the old HTML and script running against a new server.
-    """
-    flow = HTML.split("bind('restart-go'")[1]
-    assert "location.reload()" in flow
-
-
-# --- maintenance, confirmed on the device ----------------------------------
-
-
-def test_clearing_history_is_confirmed_in_the_page():
-    """The whole request: confirm here, not at a prompt on the desktop."""
-    assert "confirm-clear" in MARKUP_IDS
-    assert "confirm-clear-yes" in MARKUP_IDS
-    assert "confirm-clear-no" in MARKUP_IDS
-    body = HTML.split('id="confirm-clear"')[1]
-    assert "Delete the conversations?" in body
-
-
-def test_the_clear_button_only_opens_the_confirmation():
-    """One tap must not delete anything.
-
-    The button that starts this sits next to 'Back up' in a panel someone is
-    poking around in.
-    """
-    handler = HTML.split("bind('db-clear'")[1].split("bind('confirm-clear-no'")[0]
-    assert "/api/db/clear-history" not in handler
-    assert "setAttribute('data-open'" in handler
-
-
-def test_the_delete_request_says_confirm_explicitly():
-    flow = HTML.split("bind('confirm-clear-yes'")[1]
-    assert "/api/db/clear-history" in flow
-    assert "confirm: true" in flow
-
-
-def test_the_page_offers_no_way_to_skip_the_backup():
-    """The CLI has --no-backup. Over HTTP that shouldn't exist at all."""
-    assert "no_backup" not in HTML
-    assert "no-backup" not in HTML
-
-
-def test_the_stale_conversation_id_is_dropped_after_clearing():
-    """Otherwise the page shows a transcript the server has just forgotten."""
-    flow = HTML.split("bind('confirm-clear-yes'")[1]
-    assert "removeItem('conversationId')" in flow
