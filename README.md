@@ -64,6 +64,17 @@ wire format exists. That's what lets a local model pick up a thread Claude
 started — thinking blocks, which mean nothing to it, are dropped rather than
 passed along as something it will misread.
 
+Before trusting a model, ask it directly:
+
+```bash
+python -m sevanya.check
+```
+
+It reports what the server has loaded, how much context she needs before you've
+typed anything, and then the only question that matters — given a tool and a
+question that requires it, does the model call the tool or just talk about it?
+Exit 0 means yes.
+
 Worth knowing before you rely on it: **everything she does well depends on tool
 calls.** Reading your code, grepping it, recalling past sessions, keeping her
 list — all tools. Local models vary enormously at that, and a model that calls
@@ -402,6 +413,7 @@ sevanya/
   web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   backends.py which model answers, and the translation that allows a local one
+  check.py    is the local model reachable, and does it call tools
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
   push.py     sending a notification to the phone

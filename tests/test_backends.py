@@ -537,3 +537,84 @@ def test_export_skips_threads_she_never_answered(store, tmp_path):
     out = tmp_path / "train.jsonl"
     db_cli.main(["--path", str(store._path), "export", str(out)])
     assert out.read_text().strip() == ""
+
+
+# --- the setup check --------------------------------------------------------
+
+
+def check_against(handler, monkeypatch, capsys):
+    """Run `python -m sevanya.check` against a stand-in server."""
+    from sevanya import check
+
+    backend = local(handler)
+    monkeypatch.setattr(check.backends, "choose", lambda name=None: backend)
+
+    def get(url, **kwargs):
+        # The request has to be attached, or raise_for_status() raises
+        # RuntimeError instead of doing nothing — which the checker would
+        # report as "cannot reach it", from a server that answered fine.
+        request = httpx.Request("GET", url)
+        response = handler(request)
+        response.request = request
+        return response
+
+    monkeypatch.setattr(check.httpx, "get", get)
+    code = check.main()
+    return code, capsys.readouterr().out
+
+
+def test_the_check_passes_a_model_that_calls_tools(monkeypatch, capsys):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path": "README.md"}'}}]},
+            "finish_reason": "tool_calls"}]})
+
+    code, out = check_against(handler, monkeypatch, capsys)
+    assert code == 0
+    assert "calls tools" in out
+
+
+def test_the_check_fails_a_model_that_only_talks(monkeypatch, capsys):
+    """The failure this exists to catch.
+
+    A model that chats well and calls tools badly reads as *her* being worse,
+    which sends you looking in the wrong place entirely.
+    """
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "chatty"}]})
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": "I would need to look at README.md."}, "finish_reason": "stop"}]})
+
+    code, out = check_against(handler, monkeypatch, capsys)
+    assert code == 1
+    assert "did not call the tool" in out
+    assert "function calling" in out, "it should say what to look for instead"
+
+
+def test_the_check_flags_malformed_arguments(monkeypatch, capsys):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "sloppy"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [{
+            "id": "c1", "function": {"name": "read_file", "arguments": "{not json"}}]},
+            "finish_reason": "tool_calls"}]})
+
+    code, out = check_against(handler, monkeypatch, capsys)
+    assert code == 1
+    assert "aren't valid JSON" in out
+
+
+def test_the_check_says_how_much_context_she_needs(monkeypatch, capsys):
+    """The number that decides whether a model can run her at all."""
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "m"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+    _, out = check_against(handler, monkeypatch, capsys)
+    assert "overhead" in out
+    assert "16k" in out
