@@ -49,8 +49,10 @@ python -m sevanya.server
 Then `http://localhost:8765` in a browser, or `http://<tailscale-name>:8765`
 from my phone. Add to Home Screen for the app-like version.
 
-If a token is set, the web UI needs it once from the browser console:
-`localStorage.token = 'same-string'`
+If a token is set, the web UI asks for it the first time a request comes back
+401, and keeps it on the device. No console needed — iOS Safari doesn't have
+one, which is the whole point. `http://host:8765/?token=...` also works, for a
+QR code or a Shortcut; the token is saved and stripped from the URL.
 
 | endpoint | for | shape |
 |---|---|---|
@@ -66,6 +68,7 @@ sevanya/
   agent.py    the loop — send() blocks, stream() yields
   server.py   FastAPI: /api/chat (SSE) + /api/ask (Siri)
   web/        single-page UI, installable to the iPhone home screen
+  web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   store.py    SQLite: conversations, messages, journal
   prompt.py   the teaching contract
@@ -96,6 +99,10 @@ sevanya/
 - `Store` opens **one connection per thread** — the web server runs requests in
   a threadpool and SQLite connections can't cross threads. Don't "simplify" it
   back to a single shared connection.
+- The **Threads** button lists `/api/conversations`, Siri's included, so the
+  phone can rejoin yesterday's thread. A thread the server doesn't have any
+  more (`404`) clears itself from localStorage rather than leaving you typing
+  into a conversation that no longer exists.
 - `/api/chat` with no `conversation_id` starts a **new** thread, not the latest.
   Latest would drop me into whatever Siri last asked. The browser remembers its
   own id in localStorage.
