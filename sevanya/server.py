@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import checkin, deps, lifecycle, push
+from . import checkin, deps, lifecycle, migrations, push
 from .agent import Agent
 from .store import CHECKIN_MARKER, Store
 from .tools import PROJECT_ROOT
@@ -202,6 +202,67 @@ def restart(authorization: str | None = Header(default=None)):
     _auth(authorization)
     lifecycle.schedule_restart()
     return {"restarting": True, "pid": os.getpid()}
+
+
+class ClearIn(BaseModel):
+    # Not a default of True, and not inferred from the request having been
+    # made. Deleting history needs something that can only have come from
+    # someone deciding to.
+    confirm: bool = False
+    keep_days: int = 0
+
+
+@app.get("/api/db")
+def database(authorization: str | None = Header(default=None)):
+    """The state of the database, for deciding whether to touch it.
+
+    Everything `python -m sevanya.db check` prints, as JSON — so the same
+    decision can be made from a phone instead of from a terminal on the machine
+    it's running on.
+    """
+    _auth(authorization)
+    unloadable = store.unloadable_messages()
+    return {
+        "path": str(store._path),
+        "schema_version": migrations.version(store.db),
+        "schema_expects": migrations.LATEST,
+        "pending_migrations": [f"{n}: {d}" for n, d, _ in migrations.pending(store.db)],
+        "drift": migrations.drift(store.db),
+        "counts": store.counts(),
+        "unloadable": len(unloadable),
+        "unloadable_sample": unloadable[:5],
+        "backups": store.list_backups(),
+    }
+
+
+@app.post("/api/db/backup")
+def backup(authorization: str | None = Header(default=None)):
+    _auth(authorization)
+    path = store.auto_backup()
+    store.notify("backup", f"backed up to {path.name}")
+    return {"name": path.name, "bytes": path.stat().st_size}
+
+
+@app.post("/api/db/clear-history")
+def clear_history(body: ClearIn, authorization: str | None = Header(default=None)):
+    """Delete conversations. Keep the journal, the task list and the notices.
+
+    Takes a backup first, always — there's no flag to skip it here. On the
+    command line you're standing at the machine and can argue; over HTTP,
+    from a phone, one mis-tap should not be the end of the transcripts.
+    """
+    _auth(authorization)
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="confirm must be true")
+
+    saved = store.auto_backup()
+    removed = store.clear_conversations(keep_days=body.keep_days)
+    store.notify(
+        "clear-history",
+        f"cleared {removed['conversations']} conversations and "
+        f"{removed['messages']} messages (backup: {saved.name})",
+    )
+    return {"removed": removed, "backup": saved.name, "counts": store.counts()}
 
 
 @app.get("/api/notifications")

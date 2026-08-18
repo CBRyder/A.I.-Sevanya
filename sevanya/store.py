@@ -13,9 +13,13 @@ It gets written by Sevanya itself through the `remember` tool, not by a script.
 """
 
 import json
+import shutil
 import sqlite3
 import threading
+from datetime import datetime
 from pathlib import Path
+
+from . import migrations
 
 # Lives in your home directory, not the project — Sevanya follows you across
 # repos, and its memory of you shouldn't reset because you cd'd somewhere else.
@@ -156,8 +160,12 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._local = threading.local()
-        # Create the schema once, on whichever thread built the Store.
-        self.db.executescript(SCHEMA)
+        # Build or upgrade, on whichever thread made the Store. Not a bare
+        # executescript any more: that creates missing tables but silently
+        # ignores a table whose columns have changed, so it can leave you with
+        # a database the code can't actually use and no sign of it until an
+        # INSERT fails. See migrations.py.
+        self.applied = migrations.initialise(self.db, SCHEMA)
         self.db.commit()
 
     @property
@@ -420,6 +428,105 @@ class Store:
         )
         self.db.commit()
         return cur.rowcount
+
+    # --- looking after the file ----------------------------------------------
+
+    def backup(self, destination: Path) -> Path:
+        """Copy the database somewhere safe, WAL included.
+
+        Not shutil.copy. journal_mode is WAL, so recent commits can still be
+        sitting in sevanya.db-wal rather than the main file — copying the one
+        file can quietly lose the newest journal notes, which are the part
+        worth having. sqlite3's own backup walks the live database and folds
+        the WAL in, and it's safe to run while something else is writing.
+        """
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        target = sqlite3.connect(destination)
+        try:
+            self.db.backup(target)
+        finally:
+            target.close()
+        return destination
+
+    def auto_backup(self, directory: Path | None = None) -> Path:
+        """A timestamped backup, for taking before anything destructive."""
+        directory = Path(directory) if directory else self._path.parent / "backups"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return self.backup(directory / f"sevanya-{stamp}.db")
+
+    def list_backups(self, directory: Path | None = None, limit: int = 10) -> list[dict]:
+        """Recent backups, newest first. Shown so you can see one was taken."""
+        directory = Path(directory) if directory else self._path.parent / "backups"
+        if not directory.is_dir():
+            return []
+        found = sorted(directory.glob("sevanya-*.db"), key=lambda p: p.name, reverse=True)
+        return [{"name": p.name, "bytes": p.stat().st_size} for p in found[:limit]]
+
+    def counts(self) -> dict[str, int]:
+        """How much of each thing there is. For showing before and after."""
+        out = {}
+        for table in ("conversations", "messages", "journal", "task_list", "notifications"):
+            out[table] = self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return out
+
+    def clear_conversations(self, keep_days: int = 0) -> dict[str, int]:
+        """Delete chat history. Keep everything she learned from it.
+
+        The journal and the task list both reference conversations with
+        ON DELETE SET NULL, and messages with ON DELETE CASCADE — so removing a
+        conversation takes its messages and leaves her notes and your tasks
+        standing, with the link blanked. That's the whole reason those two
+        clauses differ, and it only works with foreign keys enforced, which is
+        set on every connection.
+
+        keep_days keeps recent threads; 0 clears the lot.
+        """
+        before = self.counts()
+
+        if keep_days > 0:
+            self.db.execute(
+                "DELETE FROM conversations WHERE updated_at < datetime('now', ?)",
+                (f"-{int(keep_days)} days",),
+            )
+        else:
+            self.db.execute("DELETE FROM conversations")
+        self.db.commit()
+
+        after = self.counts()
+        return {table: before[table] - after[table] for table in before}
+
+    def unloadable_messages(self) -> list[dict]:
+        """Rows that load_messages would choke on.
+
+        Content is stored as JSON and read back as whatever shape it was
+        written in. Change that shape and old rows keep the old one, so
+        reopening an old conversation breaks in a way that has nothing to do
+        with the new code. This finds them before they find you.
+        """
+        broken = []
+        for row in self.db.execute(
+            "SELECT id, conversation_id, role, content FROM messages ORDER BY id"
+        ):
+            try:
+                content = json.loads(row["content"])
+            except Exception as exc:
+                broken.append({"id": row["id"], "conversation_id": row["conversation_id"],
+                               "why": f"not valid JSON ({type(exc).__name__})"})
+                continue
+
+            if isinstance(content, str):
+                continue
+            if not isinstance(content, list):
+                broken.append({"id": row["id"], "conversation_id": row["conversation_id"],
+                               "why": f"content is {type(content).__name__}, expected a string or a list of blocks"})
+                continue
+            for block in content:
+                if not isinstance(block, dict) or "type" not in block:
+                    broken.append({"id": row["id"], "conversation_id": row["conversation_id"],
+                                   "why": "a content block has no 'type'"})
+                    break
+        return broken
 
     def close(self) -> None:
         """Close this thread's connection. Other threads keep their own."""

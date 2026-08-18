@@ -93,6 +93,13 @@
   .notice span { color:var(--dim); font-size:12px; }
   .notice.bad b { color:#f7768e; }
   sup { color:var(--accent); font-size:10px; margin-left:3px; }
+  .rows { display:grid; grid-template-columns:1fr auto; gap:2px 12px; margin-bottom:14px; }
+  .rows span { color:var(--dim); }
+  .rows b { font-weight:500; text-align:right; }
+  .warn { color:#e0af68; }
+  .danger { background:#5c2b33; }
+  #db-body { max-height:52dvh; overflow-y:auto; }
+  #db-result { margin:10px 0 0; white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -105,6 +112,7 @@
     <button id="threads-btn">Threads</button>
     <button id="tasks-btn">Tasks</button>
     <button id="notices-btn">Notices<sup id="notices-count"></sup></button>
+    <button id="data-btn">Data</button>
     <button id="restart-btn" title="Restart the server process">⏻</button>
   </nav>
 </header>
@@ -152,6 +160,34 @@
        machine while you weren't looking at it.</p>
     <div id="notice-list"></div>
     <div class="row"><button id="notices-close">Close</button></div>
+  </div>
+</div>
+
+<!-- Maintenance, confirmed here rather than at a terminal on the machine.
+     The whole point is that you're holding a phone. -->
+<div class="sheet" id="data">
+  <div>
+    <h2>Database</h2>
+    <div id="db-body">loading…</div>
+    <p id="db-result"></p>
+    <div class="row">
+      <button id="db-backup">Back up</button>
+      <button id="db-clear" class="danger">Clear chats…</button>
+      <button id="db-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="confirm-clear">
+  <div>
+    <h2>Delete the conversations?</h2>
+    <p id="confirm-clear-detail"></p>
+    <p>Her journal, your task list and the notices are kept. A backup is taken
+       first, and it can't be skipped from here.</p>
+    <div class="row">
+      <button id="confirm-clear-no">Cancel</button>
+      <button id="confirm-clear-yes" class="danger">Delete them</button>
+    </div>
   </div>
 </div>
 
@@ -462,6 +498,135 @@ bind('notices-btn', async () => {
 });
 
 refreshNoticeCount();
+
+// --- the database ----------------------------------------------------------
+// Everything `python -m sevanya.db check` prints, and the two actions worth
+// having, confirmed here. Standing at the machine to answer a terminal prompt
+// defeats the point of the phone.
+const dataSheet = document.getElementById('data');
+const dbBody = document.getElementById('db-body');
+const dbResult = document.getElementById('db-result');
+const confirmClear = document.getElementById('confirm-clear');
+let dbState = null;
+
+bind('db-close', () => dataSheet.removeAttribute('data-open'));
+dataSheet.onclick = e => { if (e.target === dataSheet) dataSheet.removeAttribute('data-open'); };
+confirmClear.onclick = e => { if (e.target === confirmClear) confirmClear.removeAttribute('data-open'); };
+
+function row(label, value, cls) {
+  const name = document.createElement('span');
+  name.textContent = label;
+  const amount = document.createElement('b');
+  amount.textContent = value;
+  if (cls) amount.className = cls;
+  return [name, amount];
+}
+
+async function loadDb() {
+  dbBody.textContent = 'loading…';
+  const res = await fetch('/api/db', { headers: authHeaders(), cache: 'no-store' });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+function renderDb(state) {
+  dbState = state;
+  dbBody.innerHTML = '';
+
+  const grid = document.createElement('div');
+  grid.className = 'rows';
+  for (const [table, count] of Object.entries(state.counts)) {
+    grid.append(...row(table.replace('_', ' '), count));
+  }
+  dbBody.appendChild(grid);
+
+  const notes = document.createElement('div');
+  notes.className = 'rows';
+  notes.append(...row('schema version',
+    `${state.schema_version} / ${state.schema_expects}`,
+    state.schema_version === state.schema_expects ? '' : 'warn'));
+  if (state.pending_migrations.length)
+    notes.append(...row('pending migrations',
+      state.pending_migrations.length + ' — press ⏻ to apply', 'warn'));
+  if (state.drift.length)
+    notes.append(...row('SCHEMA DRIFT', state.drift.join('; '), 'warn'));
+  notes.append(...row('unloadable messages', state.unloadable,
+    state.unloadable ? 'warn' : ''));
+  notes.append(...row('backups', state.backups.length
+    ? state.backups[0].name : 'none yet'));
+  dbBody.appendChild(notes);
+}
+
+bind('data-btn', async () => {
+  dbResult.textContent = '';
+  dataSheet.setAttribute('data-open', '');
+  try {
+    const state = await loadDb();
+    if (state === null) {
+      dataSheet.removeAttribute('data-open');
+      askToken(() => document.getElementById('data-btn').click());
+      return;
+    }
+    renderDb(state);
+  } catch (err) {
+    dbBody.textContent = String(err);
+  }
+});
+
+bind('db-backup', async () => {
+  dbResult.textContent = 'backing up…';
+  try {
+    const res = await fetch('/api/db/backup', { method: 'POST', headers: authHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const saved = await res.json();
+    dbResult.textContent = `backed up to ${saved.name} (${saved.bytes.toLocaleString()} bytes)`;
+    renderDb(await loadDb());
+  } catch (err) {
+    dbResult.textContent = 'backup failed: ' + err;
+  }
+});
+
+bind('db-clear', () => {
+  if (!dbState) return;
+  document.getElementById('confirm-clear-detail').textContent =
+    `${dbState.counts.conversations} conversations and ${dbState.counts.messages} ` +
+    `messages will be deleted.`;
+  confirmClear.setAttribute('data-open', '');
+});
+
+bind('confirm-clear-no', () => confirmClear.removeAttribute('data-open'));
+
+bind('confirm-clear-yes', async () => {
+  confirmClear.removeAttribute('data-open');
+  dbResult.textContent = 'clearing…';
+  try {
+    const res = await fetch('/api/db/clear-history', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      // Sent explicitly rather than implied by the request, so nothing that
+      // merely reaches this endpoint can delete anything.
+      body: JSON.stringify({ confirm: true, keep_days: 0 }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const done = await res.json();
+
+    dbResult.textContent =
+      `removed ${done.removed.conversations} conversations and ` +
+      `${done.removed.messages} messages — backup ${done.backup}`;
+    renderDb(await loadDb());
+
+    // The thread this device was in no longer exists. Drop it and clear the
+    // log, rather than leaving the page showing a transcript the server has
+    // just forgotten.
+    conversationId = null;
+    localStorage.removeItem('conversationId');
+    log.innerHTML = '';
+    status.textContent = 'history cleared';
+  } catch (err) {
+    dbResult.textContent = 'clear failed: ' + err;
+  }
+});
 
 // --- restarting the server -------------------------------------------------
 const restartSheet = document.getElementById('restart');
