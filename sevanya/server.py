@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import checkin, deps, lifecycle, migrations, push
+from . import backends, checkin, deps, lifecycle, migrations, push
 from .agent import Agent
 from .store import CHECKIN_MARKER, Store
 from .tools import PROJECT_ROOT
@@ -56,6 +56,14 @@ the short version and say the detail is worth looking at on a screen.
 # button uses it to confirm the server really came back rather than never
 # having gone away.
 STARTED = time.time()
+
+# Which model is answering. Resolved once, at startup, so the page can show it
+# without every request paying for the lookup — and so a misconfigured backend
+# is a startup error rather than a surprise on the first question.
+try:
+    BACKEND = backends.choose().describe()
+except Exception as exc:  # pragma: no cover - only on a bad config
+    BACKEND = f"unavailable ({type(exc).__name__}: {exc})"
 
 app = FastAPI(title="Sevanya")
 store = Store()
@@ -183,7 +191,8 @@ def health():
     It reveals only whether a token is needed, which anyone who can reach this
     port finds out from their first request anyway.
     """
-    return {"ok": True, "auth_required": bool(TOKEN), "started": STARTED}
+    return {"ok": True, "auth_required": bool(TOKEN), "started": STARTED,
+            "backend": BACKEND}
 
 
 @app.post("/api/restart")
@@ -223,6 +232,7 @@ def database(authorization: str | None = Header(default=None)):
     _auth(authorization)
     unloadable = store.unloadable_messages()
     return {
+        "backend": BACKEND,
         "path": str(store._path),
         "schema_version": migrations.version(store.db),
         "schema_expects": migrations.LATEST,

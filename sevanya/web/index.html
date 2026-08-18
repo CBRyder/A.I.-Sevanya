@@ -544,6 +544,7 @@ function renderDb(content, state) {
   for (const [table, count] of Object.entries(state.counts)) {
     content.append(pair(table.replace('_', ' '), String(count)));
   }
+  content.append(pair('answering', state.backend));
   content.append(pair('schema version',
     state.schema_version + ' / ' + state.schema_expects,
     state.schema_version !== state.schema_expects));

@@ -23,7 +23,7 @@ from _collections_abc import Callable
 
 # Bumped by adding to MIGRATIONS. A fresh database is stamped with this
 # straight away, because SCHEMA already builds the current shape.
-LATEST = 1
+LATEST = 2
 
 
 class SchemaMismatch(RuntimeError):
@@ -36,7 +36,7 @@ class SchemaMismatch(RuntimeError):
 # as the migration.
 EXPECTED = {
     "conversations": {"id", "title", "created_at", "updated_at"},
-    "messages": {"id", "conversation_id", "role", "content", "created_at"},
+    "messages": {"id", "conversation_id", "role", "content", "model", "created_at"},
     "journal": {"id", "topic", "note", "conversation_id", "created_at"},
     "task_list": {"id", "task", "done", "conversation_id", "created_at", "completed_at"},
     "notifications": {"id", "kind", "message", "created_at"},
@@ -52,10 +52,22 @@ EXPECTED = {
 #
 #   MIGRATIONS = [(2, "journal.mood", _add_mood)]
 #
-# Empty for now. The point is that the next schema change goes through here
-# rather than into SCHEMA alone.
 Migration = Callable[[sqlite3.Connection], None]
-MIGRATIONS: list[tuple[int, str, Migration]] = []
+
+
+def _add_message_model(conn: sqlite3.Connection) -> None:
+    """Record which model wrote each assistant turn.
+
+    Added when the model became configurable. Existing rows keep NULL, which
+    is the honest answer — they were written before anyone was tracking it,
+    and guessing would poison the one thing the column is for.
+    """
+    add_column(conn, "messages", "model", "TEXT")
+
+
+MIGRATIONS: list[tuple[int, str, Migration]] = [
+    (2, "messages.model — which model wrote each turn", _add_message_model),
+]
 
 
 # --- helpers for writing migrations ----------------------------------------

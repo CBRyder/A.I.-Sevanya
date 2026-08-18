@@ -407,11 +407,17 @@ def test_an_old_database_that_already_matches_gets_stamped(raw):
     assert migrations.version(raw) == migrations.LATEST
 
 
-def test_stamping_only_happens_once_the_shape_is_confirmed(raw):
-    """A drifted database must not be quietly marked current.
+def test_the_courtesy_stamp_does_not_fire_on_a_drifted_database(raw, monkeypatch):
+    """The stamp that says "this old file already matches" must not lie.
 
-    Stamping it would say 'up to date' about a file the code can't use.
+    Two different facts share one number, so be precise about which is being
+    guarded here: `version` records which migrations have run, and drift
+    records whether the shape matches. A migration that genuinely ran is
+    entitled to advance the version even if the file is refused afterwards for
+    an unrelated reason — that's the next test. What must never happen is the
+    end-of-initialise stamp declaring a drifted database current.
     """
+    monkeypatch.setattr(migrations, "MIGRATIONS", [])   # nothing legitimately to run
     raw.executescript(SCHEMA)
     raw.execute("ALTER TABLE journal RENAME COLUMN note TO note_old")
     raw.commit()
@@ -419,6 +425,25 @@ def test_stamping_only_happens_once_the_shape_is_confirmed(raw):
     with pytest.raises(migrations.SchemaMismatch):
         migrations.initialise(raw, SCHEMA)
     assert migrations.version(raw) == 0, "it stamped a database it had just rejected"
+
+
+def test_a_migration_that_ran_still_counts_even_if_the_file_is_refused(raw):
+    """Recording it is honest: that ALTER really did happen.
+
+    Pretending otherwise would re-run it on the next start, and a migration
+    that isn't safe to repeat would then fail for a second, unrelated reason.
+    """
+    raw.executescript(SCHEMA)
+    raw.execute("ALTER TABLE messages DROP COLUMN model")   # needs migration 2
+    raw.execute("ALTER TABLE journal RENAME COLUMN note TO note_old")   # and is drifted
+    migrations.set_version(raw, 1)
+    raw.commit()
+
+    with pytest.raises(migrations.SchemaMismatch, match="journal.note"):
+        migrations.initialise(raw, SCHEMA)
+
+    assert "model" in migrations.columns(raw, "messages"), "the migration didn't run"
+    assert migrations.version(raw) == 2, "the migration ran but wasn't recorded"
 
 
 def test_a_database_with_work_waiting_is_not_stamped_ahead(raw, monkeypatch):

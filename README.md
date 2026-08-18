@@ -44,7 +44,56 @@ python -m sevanya              # the server: checks requirements, then serves
 Set `SEVANYA_SKIP_DEPS=1` to start without checking, for working offline or
 managing the environment yourself. `SEVANYA_PORT` moves it off 8765.
 
-### The UI
+### Which model answers
+
+She was written against Anthropic's API. She'll also run on a model on your own
+machine — LM Studio, Ollama, anything speaking OpenAI chat-completions.
+
+```bash
+SEVANYA_BACKEND=local
+SEVANYA_LOCAL_URL=http://localhost:1234/v1      # LM Studio; Ollama is :11434/v1
+SEVANYA_LOCAL_MODEL=whatever-you-loaded
+SEVANYA_LOCAL_KEY=...                            # only if your server wants one
+```
+
+The **Data** panel shows which one is answering.
+
+**The stored transcript stays Anthropic-shaped whichever model wrote it.**
+`backends.py` translates at the boundary and is the only file that knows either
+wire format exists. That's what lets a local model pick up a thread Claude
+started — thinking blocks, which mean nothing to it, are dropped rather than
+passed along as something it will misread.
+
+Worth knowing before you rely on it: **everything she does well depends on tool
+calls.** Reading your code, grepping it, recalling past sessions, keeping her
+list — all tools. Local models vary enormously at that, and a model that calls
+tools unreliably will feel much worse than the same model does in a chat box.
+Pick one that's good at function calling, and expect to try a few.
+
+## Improving one for yourself
+
+The transcripts are the training material, and they're yours.
+
+```bash
+python -m sevanya.db export training.jsonl                # everything
+python -m sevanya.db export training.jsonl --model claude # only what Claude answered
+```
+
+One JSON object per line, OpenAI chat format — what fine-tuning tools read. It
+reuses the same converter that talks to a local model, so there's one
+definition of "this transcript as chat messages" rather than two that drift.
+
+Every assistant turn now records which model wrote it, so `--model claude`
+gives you the obvious first move: take what the stronger model wrote in *your*
+conversations, about *your* code, and train a local one on that. Turns written
+before the column existed are NULL rather than guessed — material you can't
+attribute is material you can't filter.
+
+Automatic check-ins are left out. Their opening turn is an instruction to her,
+not something you said, and training on it teaches a model that users talk like
+a cron job.
+
+## The UI
 
 One panel, opened by the buttons in the header: **Chats** (Recent, with `+ New`),
 **↻**, **Tasks**, **Notices**, **Data**, **⏻**. A dropdown under the header on a
@@ -352,6 +401,7 @@ sevanya/
   web/        single-page UI, installable to the iPhone home screen
   web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
+  backends.py which model answers, and the translation that allows a local one
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
   push.py     sending a notification to the phone
@@ -488,6 +538,10 @@ It isn't wasted, though. Four things on it were better and are now here:
 - `reload` refuses to restart when the requirements are wrong. Coming back far
   enough to crash on import is worse than not restarting, because then nothing
   is listening to say what happened.
+- `messages.model` arrived through `migrations.py` — the first real use of it,
+  and the pattern to copy: the column goes in `SCHEMA` for fresh databases, in
+  `MIGRATIONS` for existing ones, and in `EXPECTED` so the drift check knows
+  about it. All three, same commit.
 - `tests/test_restart.py` starts a real server and restarts it for real. It's
   the slow test, and the only one that would catch a restart that kills the
   process and never brings it back — the failure that ends with me walking to
