@@ -540,10 +540,52 @@ def test_export_skips_threads_she_never_answered(store, tmp_path):
 
 
 # --- the setup check --------------------------------------------------------
+#
+# The checker exists because the question "is this model good enough for her"
+# has one answer that matters: does it pick the right tool out of thirteen,
+# reliably. These tests are about it giving an honest verdict rather than a
+# flattering one.
 
 
-def check_against(handler, monkeypatch, capsys):
-    """Run `python -m sevanya.check` against a stand-in server."""
+WANTED = {"README": "read_file", "files are in this project": "list_files",
+          "MAX_STEPS": "grep", "last time": "recall"}
+
+
+def fake_server(behaviour):
+    """Stands in for a local model with a particular failing."""
+    state = {"n": 0}
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
+
+        body = json.loads(request.content)
+        ask = body["messages"][-1]["content"]
+        wanted = next((tool for phrase, tool in WANTED.items() if phrase in ask), "read_file")
+        state["n"] += 1
+
+        if behaviour == "words":
+            return httpx.Response(200, json={"choices": [{
+                "message": {"content": "I would need to look at that."},
+                "finish_reason": "stop"}]})
+
+        if behaviour == "malformed":
+            arguments = "{not json"
+        else:
+            arguments = "{}"
+
+        if behaviour == "flaky" and state["n"] % 2 == 0:
+            wanted = "notify_phone"      # confidently the wrong tool
+
+        return httpx.Response(200, json={"choices": [{
+            "message": {"tool_calls": [{"id": "c", "type": "function",
+                                        "function": {"name": wanted, "arguments": arguments}}]},
+            "finish_reason": "tool_calls"}]})
+
+    return handler
+
+
+def check_against(handler, monkeypatch, capsys, runs=1):
     from sevanya import check
 
     backend = local(handler)
@@ -559,62 +601,107 @@ def check_against(handler, monkeypatch, capsys):
         return response
 
     monkeypatch.setattr(check.httpx, "get", get)
-    code = check.main()
+    code = check.main(["--runs", str(runs)])
     return code, capsys.readouterr().out
 
 
-def test_the_check_passes_a_model_that_calls_tools(monkeypatch, capsys):
-    def handler(request):
-        if request.method == "GET":
-            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
-        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [{
-            "id": "c1", "type": "function",
-            "function": {"name": "read_file", "arguments": '{"path": "README.md"}'}}]},
-            "finish_reason": "tool_calls"}]})
+def test_the_probe_offers_every_tool_she_has():
+    """Picking one of thirteen is a different job from calling the only one.
 
-    code, out = check_against(handler, monkeypatch, capsys)
+    Testing with a single tool flatters a model that will disappoint you the
+    moment it's real — which is exactly the mistake this file used to make.
+    """
+    from sevanya import check
+    from sevanya import tools
+
+    assert check.PROBE is tools.TOOLS or len(check.PROBE) == len(tools.TOOLS)
+    assert len(check.ASKS) >= 3
+    for _, expected in check.ASKS:
+        assert expected in {t["name"] for t in tools.TOOLS}
+
+
+def test_a_model_that_always_picks_correctly_passes(monkeypatch, capsys):
+    code, out = check_against(fake_server("good"), monkeypatch, capsys, runs=2)
     assert code == 0
-    assert "calls tools" in out
+    assert "every time" in out
 
 
-def test_the_check_fails_a_model_that_only_talks(monkeypatch, capsys):
+def test_a_model_that_only_talks_fails(monkeypatch, capsys):
     """The failure this exists to catch.
 
     A model that chats well and calls tools badly reads as *her* being worse,
-    which sends you looking in the wrong place entirely.
+    which sends you looking in entirely the wrong place.
     """
-    def handler(request):
-        if request.method == "GET":
-            return httpx.Response(200, json={"data": [{"id": "chatty"}]})
-        return httpx.Response(200, json={"choices": [{"message": {
-            "content": "I would need to look at README.md."}, "finish_reason": "stop"}]})
-
-    code, out = check_against(handler, monkeypatch, capsys)
+    code, out = check_against(fake_server("words"), monkeypatch, capsys)
     assert code == 1
-    assert "did not call the tool" in out
+    assert "never called a tool" in out
     assert "function calling" in out, "it should say what to look for instead"
 
 
-def test_the_check_flags_malformed_arguments(monkeypatch, capsys):
+def test_a_model_that_picks_the_wrong_tool_half_the_time_fails(monkeypatch, capsys):
+    """Capability isn't the question with a small model — reliability is.
+
+    One lucky call tells you nothing about the twentieth, which is why the
+    probe repeats.
+    """
+    code, out = check_against(fake_server("flaky"), monkeypatch, capsys, runs=2)
+    assert code == 1
+    assert "unreliable" in out
+    assert "called the right one:" in out
+
+
+def test_it_really_does_ask_more_than_once(monkeypatch, capsys):
+    """The premise: one lucky call tells you nothing about the twentieth.
+
+    This model is perfect for exactly one round and wrong afterwards, so a
+    checker that quietly ran a single pass would hand it a clean bill.
+    """
+    state = {"n": 0}
+    asks = None
+
     def handler(request):
         if request.method == "GET":
-            return httpx.Response(200, json={"data": [{"id": "sloppy"}]})
-        return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [{
-            "id": "c1", "function": {"name": "read_file", "arguments": "{not json"}}]},
+            return httpx.Response(200, json={"data": [{"id": "honeymoon"}]})
+        body = json.loads(request.content)
+        ask = body["messages"][-1]["content"]
+        wanted = next((tool for phrase, tool in WANTED.items() if phrase in ask), "read_file")
+        state["n"] += 1
+        if state["n"] > len(asks):
+            wanted = "notify_phone"
+        return httpx.Response(200, json={"choices": [{
+            "message": {"tool_calls": [{"id": "c", "type": "function",
+                                        "function": {"name": wanted, "arguments": "{}"}}]},
             "finish_reason": "tool_calls"}]})
 
-    code, out = check_against(handler, monkeypatch, capsys)
+    from sevanya import check
+    asks = check.ASKS
+
+    passed_one, _ = check_against(handler, monkeypatch, capsys, runs=1)
+    state["n"] = 0
+    caught, out = check_against(handler, monkeypatch, capsys, runs=3)
+
+    assert passed_one == 0, "the first round really is clean"
+    assert caught == 1, "asking repeatedly should have caught it"
+    assert "unreliable" in out
+
+
+def test_malformed_arguments_count_against_it(monkeypatch, capsys):
+    code, out = check_against(fake_server("malformed"), monkeypatch, capsys)
     assert code == 1
-    assert "aren't valid JSON" in out
+    assert "not valid JSON" in out
 
 
 def test_the_check_says_how_much_context_she_needs(monkeypatch, capsys):
     """The number that decides whether a model can run her at all."""
-    def handler(request):
-        if request.method == "GET":
-            return httpx.Response(200, json={"data": [{"id": "m"}]})
-        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
-
-    _, out = check_against(handler, monkeypatch, capsys)
+    _, out = check_against(fake_server("good"), monkeypatch, capsys)
     assert "overhead" in out
     assert "16k" in out
+
+
+def test_an_unreachable_server_says_what_to_check(monkeypatch, capsys):
+    def dead(request):
+        raise httpx.ConnectError("connection refused")
+
+    code, out = check_against(dead, monkeypatch, capsys)
+    assert code == 2
+    assert "Start Server" in out
