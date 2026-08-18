@@ -8,6 +8,8 @@
 <meta name="apple-mobile-web-app-title" content="Sevanya">
 <meta name="theme-color" content="#16161a">
 <link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="icon" href="/static/icon-192.png">
 <title>Sevanya</title>
 <style>
   :root { --bg:#16161a; --panel:#1e1e24; --line:#2c2c35; --text:#e6e6ea; --dim:#8b8b99; --accent:#7aa2f7; }
@@ -47,12 +49,41 @@
     font:inherit; max-height:35vh;
   }
   textarea:focus { outline:none; border-color:var(--accent); }
+
+  /* Overlays: the token gate and the thread picker. Same shell, so they
+     look like one idea rather than two bolted-on panels. */
+  .sheet {
+    position:fixed; inset:0; background:rgba(0,0,0,.6);
+    display:none; align-items:center; justify-content:center; padding:20px;
+  }
+  .sheet[data-open] { display:flex; }
+  .sheet > div {
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:18px; width:100%; max-width:420px; max-height:70dvh; overflow-y:auto;
+  }
+  .sheet h2 { margin:0 0 6px; font-size:15px; font-weight:600; }
+  .sheet p  { margin:0 0 12px; color:var(--dim); font-size:13px; }
+  .sheet input {
+    width:100%; background:var(--bg); color:var(--text); font:inherit;
+    border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+    margin-bottom:10px;
+  }
+  .sheet input:focus { outline:none; border-color:var(--accent); }
+  .row { display:flex; gap:8px; justify-content:flex-end; }
+  .thread {
+    padding:10px 12px; border-radius:8px; cursor:pointer; border:1px solid transparent;
+  }
+  .thread:active { background:var(--line); }
+  .thread b { display:block; font-weight:500; overflow-wrap:anywhere; }
+  .thread span { color:var(--dim); font-size:12px; }
 </style>
 </head>
 <body>
 <header>
   <b>Sevanya</b>
   <button id="new">New</button>
+  <button id="refresh" title="Reload this thread from the server">↻</button>
+  <button id="threads-btn">Threads</button>
   <small id="status">ready</small>
 </header>
 
@@ -63,6 +94,65 @@
   <button id="send">Send</button>
 </footer>
 
+<!-- Token entry. There is no browser console on a phone, so this is the only
+     way to get a token into the app on the device it's actually for. -->
+<div class="sheet" id="gate">
+  <div>
+    <h2>Token required</h2>
+    <p>This Sevanya is running with <code>SEVANYA_TOKEN</code> set. Paste the same
+       string here — it's kept on this device and sent with every request.</p>
+    <input id="token-input" type="password" placeholder="SEVANYA_TOKEN"
+           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <div class="row">
+      <button id="gate-cancel">Cancel</button>
+      <button id="gate-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="threads">
+  <div>
+    <h2>Conversations</h2>
+    <p>Including anything asked through Siri.</p>
+    <div id="thread-list"></div>
+    <div class="row"><button id="threads-close">Close</button></div>
+  </div>
+</div>
+
+<script>
+// Installed first, and deliberately in its own block. Anything that throws at
+// the top level of the next script aborts the whole of it — every handler
+// after the failure never binds, so the page paints and then does nothing.
+// That's invisible on a phone, where there is no console to look at. Put it
+// on screen instead.
+//
+// A syntax error is thrown while a script is being *compiled*, so a handler
+// inside that same script would never have registered to catch it. Hence the
+// separate block, and hence writing to the DOM directly here rather than
+// calling anything defined later.
+(function () {
+  function show(text) {
+    var log = document.getElementById('log');
+    if (!log) return;
+    var el = document.createElement('div');
+    el.className = 'msg err';
+    el.textContent = text;
+    log.appendChild(el);
+    var status = document.getElementById('status');
+    if (status) status.textContent = 'script error';
+  }
+  window.addEventListener('error', function (e) {
+    // Inline scripts report the page URL as the filename, whose last path
+    // segment is empty — so fall back to 'page' rather than printing '[:229]'.
+    var where = (e.filename || '').split('/').pop() || 'page';
+    show('[' + where + ':' + (e.lineno || '?') + '] ' + (e.message || 'error'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    show('unhandled: ' + ((e.reason && e.reason.message) || e.reason));
+  });
+})();
+</script>
+
 <script>
 const log = document.getElementById('log');
 const input = document.getElementById('input');
@@ -71,9 +161,71 @@ const status = document.getElementById('status');
 let conversationId = Number(localStorage.getItem('conversationId')) || null;
 let busy = false;
 
-// Set once from the browser console if you enabled SEVANYA_TOKEN:
-//   localStorage.token = 'your-token'
-const token = localStorage.getItem('token');
+// The token, if this Sevanya is running with one. Three ways in, in order:
+// a ?token= in the URL (so a QR code or a Shortcut can carry it), whatever
+// was saved on a previous visit, or the gate below asking for it. The old
+// instruction to set localStorage from the console is no use on the device
+// this is built for — iOS Safari has no console.
+let token = new URL(location).searchParams.get('token');
+if (token) {
+  localStorage.setItem('token', token);
+  // Don't leave it sitting in the address bar or the history entry.
+  history.replaceState(null, '', location.pathname);
+} else {
+  token = localStorage.getItem('token');
+}
+
+function authHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  return headers;
+}
+
+const gate = document.getElementById('gate');
+const tokenInput = document.getElementById('token-input');
+let onToken = null;   // what to do once a token is entered
+
+function askToken(then) {
+  onToken = then;
+  tokenInput.value = token || '';
+  gate.setAttribute('data-open', '');
+  tokenInput.focus();
+}
+
+bind('gate-save', () => {
+  const value = tokenInput.value.trim();
+  if (!value) return;
+  token = value;
+  localStorage.setItem('token', value);
+  gate.removeAttribute('data-open');
+  const then = onToken; onToken = null;
+  if (then) then();
+});
+bind('gate-cancel', () => {
+  gate.removeAttribute('data-open');
+  onToken = null;
+  status.textContent = 'no token';
+});
+tokenInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gate-save').click(); }
+});
+
+// Wire a handler by id. Doing this directly —
+//   document.getElementById('refresh').onclick = ...
+// — throws "Cannot set properties of null" if the markup and the script
+// disagree about the id, and because that throw is at top level it kills
+// every line after it too: send stops working, the transcript stops loading,
+// the whole page goes inert for one wrong string. This reports the mismatch
+// and carries on binding everything else.
+function bind(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.error('no element #' + id);
+    add('err', 'missing button #' + id + ' — markup and script disagree');
+    return;
+  }
+  el.onclick = handler;
+}
 
 function add(cls, text) {
   const el = document.createElement('div');
@@ -94,47 +246,122 @@ input.addEventListener('input', () => {
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
-document.getElementById('send').onclick = send;
-document.getElementById('new').onclick = () => {
+bind('send', send);
+bind('new', () => {
   conversationId = null;
   localStorage.removeItem('conversationId');
   log.innerHTML = '';
   status.textContent = 'new conversation';
-};
+});
+
+// Refresh: pull this thread again from the server. Worth having because the
+// transcript can change without this device doing anything — ask Siri
+// something while the page is open and it lands in the database, not in this
+// log. Refresh is how you see it.
+bind('refresh', async () => {
+  if (busy) return;
+  if (!conversationId) { status.textContent = 'nothing to refresh'; return; }
+  status.textContent = 'refreshing…';
+  await restore();
+});
 
 // Reload whatever thread this device was last in.
 async function restore() {
   if (!conversationId) return;
-  const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
   try {
-    const res = await fetch('/api/conversations/' + conversationId, { headers });
+    const res = await fetch('/api/conversations/' + conversationId,
+                            { headers: authHeaders() });
+    if (res.status === 401) { askToken(restore); return; }
+    if (res.status === 404) {
+      // The database was reset or the thread is gone. Drop the id rather
+      // than sitting in a conversation the server has never heard of.
+      conversationId = null;
+      localStorage.removeItem('conversationId');
+      status.textContent = 'new conversation';
+      return;
+    }
     if (!res.ok) return;
+    log.innerHTML = '';
     for (const m of await res.json()) add(m.role === 'user' ? 'you' : 'her', m.text);
     status.textContent = 'conversation ' + conversationId;
   } catch (_) { /* offline or server down — start clean */ }
 }
 restore();
 
+// --- thread picker -------------------------------------------------------
+// The server has always exposed /api/conversations; nothing was calling it,
+// so there was no way to get back to yesterday's thread from the phone.
+const threads = document.getElementById('threads');
+const threadList = document.getElementById('thread-list');
+
+bind('threads-close', () => threads.removeAttribute('data-open'));
+threads.onclick = e => { if (e.target === threads) threads.removeAttribute('data-open'); };
+gate.onclick = e => { if (e.target === gate) document.getElementById('gate-cancel').click(); };
+
+bind('threads-btn', async () => {
+  threadList.textContent = 'loading…';
+  threads.setAttribute('data-open', '');
+  try {
+    const res = await fetch('/api/conversations', { headers: authHeaders() });
+    if (res.status === 401) {
+      threads.removeAttribute('data-open');
+      askToken(() => document.getElementById('threads-btn').click());
+      return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const rows = await res.json();
+    threadList.innerHTML = '';
+    if (!rows.length) { threadList.textContent = 'nothing yet'; return; }
+
+    for (const row of rows) {
+      const el = document.createElement('div');
+      el.className = 'thread';
+      const title = document.createElement('b');
+      title.textContent = row.title || '(untitled)';
+      const meta = document.createElement('span');
+      meta.textContent = `${row.updated_at} · ${row.n} messages`;
+      el.append(title, meta);
+      el.onclick = () => {
+        conversationId = row.id;
+        localStorage.setItem('conversationId', row.id);
+        threads.removeAttribute('data-open');
+        log.innerHTML = '';
+        restore();
+      };
+      threadList.appendChild(el);
+    }
+  } catch (err) {
+    threadList.textContent = String(err);
+  }
+});
+
 async function send() {
   const message = input.value.trim();
   if (!message || busy) return;
 
   busy = true;
-  add('you', message);
+  const echo = add('you', message);
   input.value = '';
   input.style.height = 'auto';
   status.textContent = 'thinking…';
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
 
   let bubble = null;
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers,
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ message, conversation_id: conversationId }),
     });
+    if (res.status === 401) {
+      // Ask for the token and resend once it's in — losing what you typed to
+      // an auth prompt is the kind of thing that makes you stop using it.
+      // The retry re-echoes the message, so drop this bubble first.
+      echo.remove();
+      status.textContent = 'token needed';
+      askToken(() => { input.value = message; send(); });
+      return;
+    }
     if (!res.ok) throw new Error('HTTP ' + res.status);
 
     // Read the SSE stream by hand. EventSource would be simpler but it's
@@ -176,6 +403,8 @@ async function send() {
   } catch (err) {
     add('err', String(err));
   } finally {
+    // Cleared here rather than at each exit, including the 401 path above —
+    // the retry calls send() again and would bounce off a stale busy flag.
     busy = false;
     if (status.textContent === 'thinking…') status.textContent = 'ready';
   }

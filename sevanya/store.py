@@ -152,6 +152,12 @@ class Store:
         ).fetchone()
         return row["id"] if row else None
 
+    def conversation_exists(self, conversation_id: int) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return row is not None
+
     def list_conversations(self, limit: int = 10) -> list[sqlite3.Row]:
         return self.db.execute(
             """SELECT c.id, c.title, c.updated_at, COUNT(m.id) AS n

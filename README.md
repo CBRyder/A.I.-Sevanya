@@ -49,8 +49,10 @@ python -m sevanya.server
 Then `http://localhost:8765` in a browser, or `http://<tailscale-name>:8765`
 from my phone. Add to Home Screen for the app-like version.
 
-If a token is set, the web UI needs it once from the browser console:
-`localStorage.token = 'same-string'`
+If a token is set, the web UI asks for it the first time a request comes back
+401, and keeps it on the device. No console needed — iOS Safari doesn't have
+one, which is the whole point. `http://host:8765/?token=...` also works, for a
+QR code or a Shortcut; the token is saved and stripped from the URL.
 
 | endpoint | for | shape |
 |---|---|---|
@@ -66,6 +68,7 @@ sevanya/
   agent.py    the loop — send() blocks, stream() yields
   server.py   FastAPI: /api/chat (SSE) + /api/ask (Siri)
   web/        single-page UI, installable to the iPhone home screen
+  web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   store.py    SQLite: conversations, messages, journal
   prompt.py   the teaching contract
@@ -84,6 +87,10 @@ sevanya/
   notes get injected into the system prompt; older ones it has to `recall`.
 - `recall` searches the journal **and** past conversation text. Tool results are
   excluded — they're file dumps, and matching inside them is noise.
+- `grep` is literal and case-insensitive, **not** a regex — an identifier with a
+  `.` or `(` in it shouldn't turn into pattern syntax. It caps at
+  `MAX_MATCHES` hits and skips build dirs, dotfiles and anything that isn't
+  UTF-8.
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.
@@ -92,6 +99,23 @@ sevanya/
 - `Store` opens **one connection per thread** — the web server runs requests in
   a threadpool and SQLite connections can't cross threads. Don't "simplify" it
   back to a single shared connection.
+- **↻** re-pulls the current thread from the server. Worth having because the
+  transcript changes without this device doing anything — ask Siri something
+  with the page open and it lands in the database, not in the log. Note that
+  tool lines don't come back: `/api/conversations/{id}` returns text only.
+- Wire buttons with `bind(id, fn)`, not `getElementById(id).onclick`. If the
+  id doesn't match the markup, the direct form throws at the top level of the
+  script, which aborts **the rest of the script** — send stops working, the
+  transcript stops loading, the whole page goes inert over one wrong string.
+  `bind` reports the mismatch on screen and keeps binding everything else.
+- The first `<script>` block puts JS errors *in the page*. There's no console
+  on an iPhone, so a silent script death is otherwise undebuggable from the
+  device. It's a separate block because a syntax error is thrown while its own
+  script is compiling — a handler inside that script would never have run.
+- The **Threads** button lists `/api/conversations`, Siri's included, so the
+  phone can rejoin yesterday's thread. A thread the server doesn't have any
+  more (`404`) clears itself from localStorage rather than leaving you typing
+  into a conversation that no longer exists.
 - `/api/chat` with no `conversation_id` starts a **new** thread, not the latest.
   Latest would drop me into whatever Siri last asked. The browser remembers its
   own id in localStorage.

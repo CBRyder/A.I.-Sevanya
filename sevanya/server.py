@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agent import Agent
@@ -43,6 +44,11 @@ the short version and say the detail is worth looking at on a screen.
 
 app = FastAPI(title="Sevanya")
 store = Store()
+
+# App icons, referenced by manifest.json and the apple-touch-icon link. iOS
+# will happily "Add to Home Screen" without them and give you a blurry
+# screenshot of the page as the icon, which looks like something half-built.
+app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
 
 class ChatIn(BaseModel):
@@ -74,7 +80,12 @@ def chat(body: ChatIn, authorization: str | None = Header(default=None)):
     # creates its own conversations, and grabbing the newest would drop you
     # into a voice thread the moment you opened the web UI. The browser
     # remembers its own conversation id instead (localStorage) and sends it.
-    conversation_id = body.conversation_id or store.new_conversation()
+    conversation_id = body.conversation_id
+    if conversation_id is None:
+        # Title it from the opening message, the way the REPL does. Without
+        # this every thread the browser starts is "(untitled)" in the picker,
+        # which makes the picker useless for the one job it has.
+        conversation_id = store.new_conversation(title=body.message[:60])
     agent = Agent(store, conversation_id)
 
     def events():
@@ -126,6 +137,13 @@ def history(conversation_id: int, authorization: str | None = Header(default=Non
     tool_use blocks that made it work.
     """
     _auth(authorization)
+
+    # Say plainly that it's gone, rather than returning []. A phone holding a
+    # stale id in localStorage needs to be able to tell "empty conversation"
+    # from "that conversation no longer exists" so it can drop the id.
+    if not store.conversation_exists(conversation_id):
+        raise HTTPException(status_code=404, detail="no such conversation")
+
     out = []
     for message in store.load_messages(conversation_id):
         content = message["content"]
