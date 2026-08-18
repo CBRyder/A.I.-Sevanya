@@ -9,7 +9,7 @@ doesn't exist cannot.
 
 from pathlib import Path, PurePosixPath
 
-from . import net
+from . import deps, lifecycle, net
 
 # Everything is resolved relative to wherever you launch Sevanya from.
 PROJECT_ROOT = Path.cwd().resolve()
@@ -155,6 +155,30 @@ TOOLS = [
                 }
             },
             "required": ["url"],
+        },
+    },
+    {
+        "name": "reload",
+        "description": (
+            "Restart yourself so that changes on disk take effect: new code, "
+            "an edited prompt, a changed requirements.txt. Checks the "
+            "requirements first and installs anything missing, then restarts "
+            "the server — their browser notices and reloads itself, so the "
+            "interface picks up front-end changes too. Use it when they ask "
+            "you to reload or restart, or when you've just told them a change "
+            "needs one. Your reply is sent before the restart happens, so say "
+            "what you're doing and what you found; the conversation is on disk "
+            "and continues afterwards."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "install": {
+                    "type": "boolean",
+                    "description": "Install anything missing or broken. Defaults to true; set false to only report.",
+                }
+            },
+            "required": [],
         },
     },
     {
@@ -530,6 +554,42 @@ def recall(query: str, *, store, conversation_id) -> str:
     return "\n".join(out)
 
 
+# --- reloading --------------------------------------------------------------
+
+
+def reload(install: bool = True, *, store, conversation_id) -> str:
+    """Check the requirements, then restart the process.
+
+    Both halves are recorded as notifications, because this is the one thing
+    she does that outlives the conversation it was asked in: the restart takes
+    the transcript view with it, and if the dependency check found something
+    interesting, the answer explaining it is easy to miss.
+    """
+    ok, report = deps.ensure(PROJECT_ROOT, install_missing=install)
+    store.notify("requirements" if ok else "requirements-failed", report)
+
+    if not ok:
+        # Don't restart into a broken environment. The process would come back
+        # far enough to fail on import, and then there's nothing listening to
+        # explain why.
+        return (
+            f"Not restarting — the requirements aren't right yet:\n{report}\n\n"
+            f"Fix that first, or the server would come back only far enough to "
+            f"crash on import."
+        )
+
+    if not lifecycle.can_restart():
+        store.notify("reload", "reload asked for outside the server — nothing to restart")
+        return (
+            f"{report}\n\nNothing to restart: this is the terminal REPL, not the "
+            f"server. Quit and start it again to pick up code changes."
+        )
+
+    store.notify("restart", f"reloading — {report}")
+    lifecycle.schedule_restart()
+    return f"{report}\n\nRestarting now — the page will come back on its own in a moment."
+
+
 # --- the task list ----------------------------------------------------------
 #
 # Writes, like the journal — to Sevanya's own database, never to your source.
@@ -594,12 +654,14 @@ REGISTRY = {
     "complete_task": complete_task,
     "remove_task": remove_task,
     "list_tasks": list_tasks,
+    "reload": reload,
 }
 
 # Tools needing access to the journal. Listed explicitly rather than inspected
 # at runtime — you can see at a glance which tools touch persistent state.
 NEEDS_STORE = {"remember", "recall",
-               "add_task", "complete_task", "remove_task", "list_tasks"}
+               "add_task", "complete_task", "remove_task", "list_tasks",
+               "reload"}
 
 
 def dispatch(name: str, arguments: dict, *, store=None, conversation_id=None) -> tuple[str, bool]:

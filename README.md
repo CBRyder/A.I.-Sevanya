@@ -86,7 +86,8 @@ QR code or a Shortcut; the token is saved and stripped from the URL.
 |---|---|---|
 | `POST /api/chat` | web UI | SSE, streams as it thinks |
 | `POST /api/ask` | Siri Shortcut | blocking, one blob of text |
-| `GET /api/health` | the reconnect button | is it up, does it want a token — no auth |
+| `GET /api/health` | the restart flow | is it up, does it want a token — no auth |
+| `GET /api/notifications` | Notices | the log, newest first |
 | `GET /api/conversations` | both | recent threads |
 | `GET /api/conversations/{id}` | both | readable transcript |
 
@@ -118,6 +119,43 @@ first. Capped at ten; the context window isn't free.
 
 Different from the journal, which is what she noticed about how I'm learning
 and is written once. This has a lifecycle.
+
+## Telling her to reload
+
+"Reload" works as a thing I say to her, not just a button I press. The `reload`
+tool checks `requirements.txt`, installs anything missing, restarts the server,
+and my browser notices and reloads itself — so front-end changes show up too,
+not just Python ones.
+
+The dependency check asks two questions, and the second is the one that bites:
+
+- is it installed, at a version the requirement allows?
+- **does it actually import?**
+
+A package can be present, correct, and still fail on import because something
+underneath it isn't there. That surfaces as the server dying at startup with a
+traceback naming a module I've never heard of, rather than as "you're missing a
+dependency" — much worse to debug from a phone.
+
+If the check fails, **she doesn't restart**. The process would come back only
+far enough to crash on import, and then there's nothing listening to explain
+why. She reports what's wrong and stays up instead.
+
+The server also runs the check on the way up (report-only, no installing) and
+records the answer, so a restart into a broken environment leaves evidence.
+
+## Notices
+
+`notifications` in the same database — restarts, dependency checks, errors:
+things that happened on the machine while I wasn't looking at it, which is the
+normal case when she's on the PC and I'm on the phone.
+
+The **Notices** button opens the log, scrollable and read-only, with a count of
+what's arrived since this device last looked. "Seen" is tracked in
+`localStorage`, because it's a property of the phone rather than of the notice —
+and marking one read on the server would be a write to a log that only reads.
+`GET /api/notifications` is the only endpoint, and the log is trimmed to the
+most recent 500 so it can't grow forever in the same database as the journal.
 
 ## Restarting it from the phone
 
@@ -189,6 +227,8 @@ sevanya/
   web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   net.py      the two things that leave the machine, and what they refuse
+  deps.py     are the requirements installed — and do they import
+  lifecycle.py  restarting the process, shared by the endpoint and the tool
   store.py    SQLite: conversations, messages, journal, task list
   prompt.py   the teaching contract
   main.py     terminal REPL
@@ -213,6 +253,9 @@ sevanya/
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.
+- `reload` refuses to restart when the requirements are wrong. Coming back far
+  enough to crash on import is worse than not restarting, because then nothing
+  is listening to say what happened.
 - `tests/test_restart.py` starts a real server and restarts it for real. It's
   the slow test, and the only one that would catch a restart that kills the
   process and never brings it back — the failure that ends with me walking to

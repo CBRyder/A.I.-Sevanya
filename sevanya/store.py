@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS task_list (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_list_open ON task_list(done, id);
+
+-- A log of things that happened to Sevanya herself rather than in a
+-- conversation: restarts, dependency installs, repos synced, errors. It exists
+-- because most of these happen while nobody is looking at the terminal — the
+-- whole point is that she runs on the PC and you're on the phone.
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_id ON notifications(id DESC);
 """
 
 
@@ -344,6 +357,38 @@ class Store:
                WHERE done = 0 ORDER BY id LIMIT ?""",
             (limit,),
         ).fetchall()
+
+    # --- notifications ------------------------------------------------------
+
+    def notify(self, kind: str, message: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO notifications (kind, message) VALUES (?, ?)",
+            (kind, message),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def notifications(self, limit: int = 200) -> list[sqlite3.Row]:
+        """Newest first — this is a log you scroll, not a queue you work."""
+        return self.db.execute(
+            "SELECT id, kind, message, created_at FROM notifications ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def trim_notifications(self, keep: int = 500) -> int:
+        """Drop the oldest once the log gets long.
+
+        Unbounded it would grow forever for something nobody reads twice, and
+        it shares a database with the journal, which is the part that matters.
+        """
+        cur = self.db.execute(
+            """DELETE FROM notifications WHERE id NOT IN (
+                   SELECT id FROM notifications ORDER BY id DESC LIMIT ?
+               )""",
+            (keep,),
+        )
+        self.db.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         """Close this thread's connection. Other threads keep their own."""

@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import deps, lifecycle
 from .agent import Agent
 from .store import Store
 from .tools import PROJECT_ROOT
@@ -58,6 +59,18 @@ STARTED = time.time()
 
 app = FastAPI(title="Sevanya")
 store = Store()
+
+# Tells the `reload` tool there's a server here to restart. The terminal REPL
+# never imports this module, so there it correctly reports nothing to do.
+lifecycle.mark_server_running()
+
+# Check the requirements on the way up and record the answer. Doing it here
+# rather than only in `reload` means a restart that lands in a broken
+# environment leaves a note saying so — otherwise the only evidence is a
+# traceback in a terminal nobody is looking at.
+_deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=False)
+store.notify("startup", f"server started — {_deps_report}")
+store.trim_notifications()
 
 # App icons, referenced by manifest.json and the apple-touch-icon link. iOS
 # will happily "Add to Home Screen" without them and give you a blurry
@@ -150,41 +163,6 @@ def health():
     return {"ok": True, "auth_required": bool(TOKEN), "started": STARTED}
 
 
-# How to start a fresh copy of this server. Always the module entry point,
-# whatever was typed originally: `python server.py` can't work, because the
-# relative imports need the package context that -m provides. cwd and the
-# environment come along with exec, so PROJECT_ROOT and SEVANYA_TOKEN are the
-# same on the other side.
-RELAUNCH = [sys.executable, "-m", "sevanya.server"]
-
-
-def _relaunch() -> None:
-    """Replace this process with a new one.
-
-    execv rather than spawn-and-exit: same PID, same terminal, and no window
-    where nothing is listening because the parent died before the child was
-    up. Python marks its own file descriptors non-inheritable, so the listening
-    socket closes as the image is replaced and the new process can take the
-    port straight back.
-    """
-    os.execv(sys.executable, RELAUNCH)
-
-
-def _schedule_restart(delay: float = 0.4) -> None:
-    """Restart, but not until the response has gone out.
-
-    Calling execv inline would replace the process mid-request and the client
-    would see a dropped connection rather than an answer — which is exactly
-    the state the button exists to get out of, so it would be indistinguishable
-    from the button not working.
-    """
-    def run():
-        time.sleep(delay)
-        _relaunch()
-
-    threading.Thread(target=run, daemon=True).start()
-
-
 @app.post("/api/restart")
 def restart(authorization: str | None = Header(default=None)):
     """Restart the server process.
@@ -199,8 +177,19 @@ def restart(authorization: str | None = Header(default=None)):
     unaffected.
     """
     _auth(authorization)
-    _schedule_restart()
+    lifecycle.schedule_restart()
     return {"restarting": True, "pid": os.getpid()}
+
+
+@app.get("/api/notifications")
+def notifications(authorization: str | None = Header(default=None)):
+    """What's happened to her lately — restarts, installs, errors.
+
+    Read-only, like the task list: this is a log of things that happened, and
+    there is nothing here for a client to change.
+    """
+    _auth(authorization)
+    return [dict(row) for row in store.notifications()]
 
 
 @app.get("/api/tasks")

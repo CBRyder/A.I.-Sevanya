@@ -239,7 +239,7 @@ def test_restart_requires_the_token_when_one_is_set(tmp_path, monkeypatch, block
     """This one does something to the machine rather than reading from it."""
     client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
     called = []
-    monkeypatch.setattr(server, "_schedule_restart", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
 
     assert client.post("/api/restart").status_code == 401
     assert client.post("/api/restart", headers={"Authorization": "Bearer wrong"}).status_code == 401
@@ -254,7 +254,7 @@ def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch,
     """
     client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
     called = []
-    monkeypatch.setattr(server, "_schedule_restart", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
 
     body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
     assert body["restarting"] is True
@@ -264,8 +264,21 @@ def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch,
 
 def test_the_relaunch_uses_the_module_entry_point(tmp_path, monkeypatch, blocks):
     """`python server.py` cannot work — the relative imports need -m."""
-    _, server = build(tmp_path, monkeypatch, answer(blocks))
-    assert server.RELAUNCH[1:] == ["-m", "sevanya.server"]
+    from sevanya import lifecycle
+
+    assert lifecycle.RELAUNCH[1:] == ["-m", "sevanya.server"]
+
+
+def test_importing_the_server_marks_it_restartable(tmp_path, monkeypatch, blocks):
+    """The reload tool needs to know whether there's a server to restart.
+
+    Under the terminal REPL there isn't, and exec'ing one into existence
+    underneath somebody typing at a prompt would be a surprise.
+    """
+    from sevanya import lifecycle
+
+    build(tmp_path, monkeypatch, answer(blocks))
+    assert lifecycle.can_restart()
 
 
 # --- the task list, read only ----------------------------------------------
@@ -302,3 +315,43 @@ def test_there_is_no_way_to_change_the_list_over_http(tmp_path, monkeypatch, blo
     assert task_routes, "the tasks endpoint disappeared"
     for path, methods in task_routes:
         assert set(methods) <= {"GET", "HEAD"}, f"{path} accepts {methods}"
+
+
+# --- notifications ---------------------------------------------------------
+
+
+def test_notifications_are_readable(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    server.store.notify("restart", "reloading — all good")
+    rows = client.get("/api/notifications").json()
+    assert rows[0]["message"] == "reloading — all good"
+    assert rows[0]["kind"] == "restart"
+
+
+def test_notifications_need_the_token(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    assert client.get("/api/notifications").status_code == 401
+
+
+def test_the_notification_log_cannot_be_written_over_http(tmp_path, monkeypatch, blocks):
+    """A log of what happened. There is nothing here for a client to change."""
+    _, server = build(tmp_path, monkeypatch, answer(blocks))
+    routes = [
+        (route.path, sorted(route.methods))
+        for route in server.app.routes
+        if getattr(route, "path", "").startswith("/api/notifications")
+    ]
+    assert routes, "the notifications endpoint disappeared"
+    for path, methods in routes:
+        assert set(methods) <= {"GET", "HEAD"}, f"{path} accepts {methods}"
+
+
+def test_starting_up_records_the_dependency_check(tmp_path, monkeypatch, blocks):
+    """A restart into a broken environment has to leave evidence somewhere.
+
+    Otherwise the only trace is a traceback in a terminal nobody is watching,
+    which is precisely the situation when you're holding a phone.
+    """
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    rows = client.get("/api/notifications").json()
+    assert any(r["kind"] == "startup" for r in rows)

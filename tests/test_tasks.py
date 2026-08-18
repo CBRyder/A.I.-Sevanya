@@ -230,3 +230,36 @@ def test_the_injected_list_is_capped(store):
     prompt = build_agent(store)._system()
     assert "task number 9" in prompt
     assert "task number 39" not in prompt
+
+
+# --- notifications ---------------------------------------------------------
+
+
+def test_notifications_come_back_newest_first(store):
+    """A log you scroll, not a queue you work through."""
+    store.notify("startup", "server started")
+    store.notify("restart", "reloading")
+    rows = store.notifications()
+    assert [r["message"] for r in rows] == ["reloading", "server started"]
+    assert rows[0]["kind"] == "restart"
+
+
+def test_the_log_is_trimmed_so_it_cannot_grow_forever(store):
+    """It shares a database with the journal, which is the part that matters."""
+    for i in range(30):
+        store.notify("test", f"message {i}")
+    store.trim_notifications(keep=10)
+    rows = store.notifications()
+    assert len(rows) == 10
+    assert rows[0]["message"] == "message 29", "it kept the newest"
+    assert rows[-1]["message"] == "message 20"
+
+
+def test_trimming_leaves_the_journal_and_tasks_alone(store):
+    store.remember("topic", "a note")
+    store.add_task("a task")
+    for i in range(5):
+        store.notify("test", f"m{i}")
+    store.trim_notifications(keep=1)
+    assert store.recall("note")
+    assert store.list_tasks()

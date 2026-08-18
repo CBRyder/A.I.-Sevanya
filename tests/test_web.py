@@ -207,3 +207,50 @@ def test_the_restart_flow_waits_for_a_new_process():
 def test_the_restart_flow_gives_up_rather_than_hanging():
     flow = HTML.split("bind('restart-go'")[1]
     assert "did not come back" in flow
+
+
+# --- the notices panel -----------------------------------------------------
+
+
+def test_the_notices_log_scrolls_inside_its_sheet():
+    """It's the one list with no natural length.
+
+    Without its own scroll it would grow the sheet past the screen and take
+    the Close button with it.
+    """
+    assert "#notice-list" in HTML
+    styles = HTML.split("#notice-list")[1].split("}")[0]
+    assert "overflow-y" in styles and "max-height" in styles
+
+
+def test_the_notices_panel_never_builds_a_control():
+    """Read-only, like the task list. There is nothing to do to a log entry."""
+    render = HTML.split("bind('notices-btn'")[1].split("// --- restarting")[0]
+    for control in ("createElement('input')", "createElement('button')", "type = 'checkbox'"):
+        assert control not in render, f"the notices panel builds a {control}"
+
+
+def test_the_page_never_writes_to_the_notifications_api():
+    for script in CODE:
+        for match in re.finditer(
+                r"fetch\(\s*'(/api/notifications[^']*)'\s*(?:,\s*\{([^}]*)\})?", script):
+            assert "method" not in (match.group(2) or ""), f"{match.group(1)} is called with a method"
+
+
+def test_unseen_is_tracked_on_the_device_not_the_server():
+    """"Seen" is a property of this phone, not of the notice.
+
+    Marking one read server-side would also be a write to a read-only log.
+    """
+    assert "localStorage.setItem('lastNotice'" in HTML
+    assert "localStorage.getItem('lastNotice')" in HTML
+
+
+def test_a_reload_reloads_the_page_rather_than_just_re_syncing():
+    """The usual reason to reload is that the code on disk changed.
+
+    This page is part of that code, so re-syncing the transcript would leave
+    the old HTML and script running against a new server.
+    """
+    flow = HTML.split("bind('restart-go'")[1]
+    assert "location.reload()" in flow
