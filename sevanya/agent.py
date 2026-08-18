@@ -48,20 +48,34 @@ class Agent:
         self.messages: list[dict] = store.load_messages(conversation_id)
 
     def _system(self) -> str:
-        """System prompt plus a little continuity from the journal.
+        """System prompt, plus a little continuity from the journal and the list.
 
         Injecting the few most recent notes costs almost nothing and means
         Sevanya opens knowing roughly where you left off, rather than needing
         to call `recall` before it can be useful. Anything older it has to go
         looking for — which is the right default, since old notes shouldn't
         crowd the context window forever.
+
+        Open tasks go in for a second reason as well as continuity: completing
+        one requires knowing its id, and a list she can already see is a list
+        she can act on without a lookup first.
         """
         prompt = SYSTEM + self.system_extra
+
         recent = self.store.recent_journal(limit=5)
-        if not recent:
-            return prompt
-        lines = "\n".join(f"- [{r['topic']}] {r['note']}" for r in reversed(recent))
-        return f"{prompt}\n\nFrom your journal, most recent last:\n{lines}\n"
+        if recent:
+            lines = "\n".join(f"- [{r['topic']}] {r['note']}" for r in reversed(recent))
+            prompt = f"{prompt}\n\nFrom your journal, most recent last:\n{lines}\n"
+
+        tasks = self.store.open_tasks(limit=10)
+        if tasks:
+            lines = "\n".join(f"- {t['id']}. {t['task']}" for t in tasks)
+            prompt = (
+                f"{prompt}\n\nOn their task list, still open "
+                f"(the number is the task_id):\n{lines}\n"
+            )
+
+        return prompt
 
     def send(self, user_text: str) -> str:
         """Send one user message, run any tools it triggers, return the reply."""

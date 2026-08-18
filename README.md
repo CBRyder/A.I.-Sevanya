@@ -17,6 +17,7 @@ structural, not a promise in a prompt.
 | — | grep tool (mine) ✅ |
 | 3 | FastAPI — `/api/chat` (SSE) + `/api/ask` (blocking, Siri) ✅ |
 | — | `sync_repo` + `fetch_url` — reads GitHub repos and public pages ✅ |
+| — | task list — she adds, completes and drops them ✅ |
 | 4 | Tailscale + iOS Shortcut → "Hey Siri, ask Sevanya…" |
 | 5 | Expo Go client, if the PWA isn't enough |
 | 6 | Local model via LM Studio, teaching modes |
@@ -88,6 +89,27 @@ QR code or a Shortcut; the token is saved and stripped from the URL.
 | `GET /api/conversations` | both | recent threads |
 | `GET /api/conversations/{id}` | both | readable transcript |
 
+## The task list
+
+`task_list` in the same SQLite database. She adds to it when you say you'll do
+something later, marks things done when you've done them, and removes what
+turned out not to matter.
+
+| tool | for |
+|---|---|
+| `add_task` | something you said you'd do |
+| `complete_task` | you did it |
+| `remove_task` | it stopped mattering — permanent, and not the same as done |
+| `list_tasks` | the whole list, completed ones included |
+
+Open tasks are injected into the system prompt the way recent journal notes
+are, so she starts every conversation already knowing what's outstanding —
+including the ids, since completing something needs one and she shouldn't have
+to look it up first. Capped at ten; the context window isn't free.
+
+It's a different thing from the journal, which is what *she* noticed about how
+you're learning and is written once. This has a lifecycle.
+
 ## Reaching outside the machine
 
 Two tools, both reads. She still has no way to write your source; a clone lands
@@ -133,7 +155,7 @@ sevanya/
   web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   net.py      the two things that leave the machine, and what they refuse
-  store.py    SQLite: conversations, messages, journal
+  store.py    SQLite: conversations, messages, journal, task list
   prompt.py   the teaching contract
   main.py     terminal REPL
 ```
@@ -157,6 +179,12 @@ sevanya/
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.
+- The `task_list` table is created with `IF NOT EXISTS` like the rest of the
+  schema, so an existing `~/.sevanya/sevanya.db` picks it up on next start.
+  There's no migration to run.
+- `complete_task` and `remove_task` are deliberately different: one is history,
+  the other is gone. Given a task id that doesn't exist, both answer with the
+  actual open list rather than just refusing — the id was probably misread.
 - A path starting `repos/` addresses the clone cache, not your project — but
   if your project has its own top-level `repos/`, yours wins and `sync_repo`
   tells you the cache is shadowed rather than handing back a path that reads

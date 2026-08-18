@@ -183,6 +183,85 @@ TOOLS = [
         },
     },
     {
+        "name": "add_task",
+        "description": (
+            "Put something on the user's task list. Use this when they say "
+            "they're going to do something later, or when the two of you land "
+            "on a next step — 'I should write tests for that', 'let me come "
+            "back to the parser'. Open tasks are shown to you at the start of "
+            "every conversation, so this is how something survives until they "
+            "actually pick it up. One task per call. Don't add things they've "
+            "already done, and don't turn everything they mention into a task; "
+            "a list of everything is a list nobody reads."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "What they intend to do, in their terms, e.g. 'write the iOS Shortcut for /api/ask'",
+                }
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "complete_task",
+        "description": (
+            "Mark a task done. Use it as soon as they've clearly finished the "
+            "thing, without waiting to be told to tick it off — you can see the "
+            "open list, so noticing is your job. Say that you've done it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "integer",
+                    "description": "The number shown beside the task in your open list.",
+                }
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "remove_task",
+        "description": (
+            "Delete a task from the list. For things that turned out not to "
+            "matter, got superseded, or were never really a task — not for "
+            "things they finished, which are complete_task. Deleting is "
+            "permanent, so if you're unsure which of the two it is, ask."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "integer",
+                    "description": "The number shown beside the task in your open list.",
+                }
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "list_tasks",
+        "description": (
+            "Read the task list. Open tasks are already in front of you at the "
+            "start of each conversation, so reach for this when you need what "
+            "isn't — everything they've completed, or the full list when it's "
+            "longer than the few you were shown."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_done": {
+                    "type": "boolean",
+                    "description": "Include completed tasks. Defaults to open ones only.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "recall",
         "description": (
             "Search everything from previous sessions — both your journal "
@@ -448,6 +527,57 @@ def recall(query: str, *, store, conversation_id) -> str:
     return "\n".join(out)
 
 
+# --- the task list ----------------------------------------------------------
+#
+# Writes, like the journal — to Sevanya's own database, never to your source.
+
+
+def _task_line(row) -> str:
+    mark = "x" if row["done"] else " "
+    return f"  [{mark}] {row['id']}. {row['task']}"
+
+
+def add_task(task: str, *, store, conversation_id) -> str:
+    task = task.strip()
+    if not task:
+        return "nothing to add — the task was empty"
+    task_id = store.add_task(task, conversation_id)
+    # Hand back the id, since completing or removing it later needs one.
+    return f"added task {task_id}: {task}"
+
+
+def complete_task(task_id: int, *, store, conversation_id) -> str:
+    existing = store.get_task(task_id)
+    if existing is None:
+        # Name what's actually there rather than just refusing. The id was
+        # probably misread, and the open list is short.
+        return f"no task {task_id}. Open tasks:\n{_open_or_none(store)}"
+    if existing["done"]:
+        return f"task {task_id} was already done: {existing['task']}"
+    store.complete_task(task_id)
+    return f"completed task {task_id}: {existing['task']}"
+
+
+def remove_task(task_id: int, *, store, conversation_id) -> str:
+    existing = store.get_task(task_id)
+    if existing is None:
+        return f"no task {task_id}. Open tasks:\n{_open_or_none(store)}"
+    store.remove_task(task_id)
+    return f"removed task {task_id}: {existing['task']}"
+
+
+def list_tasks(include_done: bool = False, *, store, conversation_id) -> str:
+    rows = store.list_tasks(include_done=include_done)
+    if not rows:
+        return "the task list is empty" if include_done else "nothing open"
+    return "\n".join(_task_line(row) for row in rows)
+
+
+def _open_or_none(store) -> str:
+    rows = store.open_tasks(limit=20)
+    return "\n".join(_task_line(row) for row in rows) if rows else "  (none)"
+
+
 # Maps the name the model uses to the function we actually call.
 REGISTRY = {
     "read_file": read_file,
@@ -457,11 +587,16 @@ REGISTRY = {
     "fetch_url": fetch_url,
     "remember": remember,
     "recall": recall,
+    "add_task": add_task,
+    "complete_task": complete_task,
+    "remove_task": remove_task,
+    "list_tasks": list_tasks,
 }
 
 # Tools needing access to the journal. Listed explicitly rather than inspected
 # at runtime — you can see at a glance which tools touch persistent state.
-NEEDS_STORE = {"remember", "recall"}
+NEEDS_STORE = {"remember", "recall",
+               "add_task", "complete_task", "remove_task", "list_tasks"}
 
 
 def dispatch(name: str, arguments: dict, *, store=None, conversation_id=None) -> tuple[str, bool]:

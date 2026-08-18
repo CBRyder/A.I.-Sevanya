@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 
 CREATE INDEX IF NOT EXISTS idx_journal_topic ON journal(topic);
+
+-- What you've said you're going to do. Distinct from the journal: the journal
+-- is what Sevanya noticed about how you're learning, and it's write-once. This
+-- is a working list with a lifecycle — added, completed, or dropped when it
+-- turns out not to matter.
+CREATE TABLE IF NOT EXISTS task_list (
+    id              INTEGER PRIMARY KEY,
+    task            TEXT NOT NULL,
+    done            INTEGER NOT NULL DEFAULT 0,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_list_open ON task_list(done, id);
 """
 
 
@@ -261,6 +276,72 @@ class Store:
     def recent_journal(self, limit: int = 5) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT topic, note, created_at FROM journal ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    # --- the task list ------------------------------------------------------
+    #
+    # CREATE TABLE IF NOT EXISTS means an existing ~/.sevanya/sevanya.db picks
+    # this up the next time Sevanya starts. There's no migration to run.
+
+    def add_task(self, task: str, conversation_id: int | None = None) -> int:
+        cur = self.db.execute(
+            "INSERT INTO task_list (task, conversation_id) VALUES (?, ?)",
+            (task, conversation_id),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def get_task(self, task_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT id, task, done, created_at, completed_at FROM task_list WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+    def complete_task(self, task_id: int) -> bool:
+        """Mark one done. False if there's no such task.
+
+        Completing something already complete is not an error — it's a no-op
+        with an honest answer, because the interesting failure is naming a task
+        that doesn't exist.
+        """
+        cur = self.db.execute(
+            "UPDATE task_list SET done = 1, completed_at = datetime('now') WHERE id = ?",
+            (task_id,),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def reopen_task(self, task_id: int) -> bool:
+        cur = self.db.execute(
+            "UPDATE task_list SET done = 0, completed_at = NULL WHERE id = ?",
+            (task_id,),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def remove_task(self, task_id: int) -> bool:
+        cur = self.db.execute("DELETE FROM task_list WHERE id = ?", (task_id,))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def list_tasks(self, include_done: bool = False, limit: int = 50) -> list[sqlite3.Row]:
+        """Open tasks oldest first — the order you'd work through them."""
+        where = "" if include_done else "WHERE done = 0"
+        return self.db.execute(
+            f"""SELECT id, task, done, created_at, completed_at FROM task_list
+                {where} ORDER BY done, id LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    def open_tasks(self, limit: int = 10) -> list[sqlite3.Row]:
+        # Selects `done` as well, even though it's 0 for every row here, so
+        # these rows have the same shape as list_tasks' and anything that
+        # formats one can format the other. sqlite3.Row raises on a missing
+        # column, so a narrower select turns a shared helper into a crash.
+        return self.db.execute(
+            """SELECT id, task, done, created_at FROM task_list
+               WHERE done = 0 ORDER BY id LIMIT ?""",
             (limit,),
         ).fetchall()
 
