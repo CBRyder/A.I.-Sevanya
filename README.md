@@ -336,9 +336,68 @@ sevanya/
   lifecycle.py  restarting the process, shared by the endpoint and the tool
   __main__.py   `python -m sevanya` — requirements first, then the server
   store.py    SQLite: conversations, messages, journal, task list
+  migrations.py  schema versioning and the drift check
+  db.py       maintenance CLI: check, backup, migrate, clear-history
   prompt.py   the teaching contract
   main.py     terminal REPL
 ```
+
+## Looking after the database
+
+```bash
+python -m sevanya.db check           # version, drift, contents, unloadable rows
+python -m sevanya.db backup          # WAL-safe copy
+python -m sevanya.db migrate         # apply pending schema changes
+python -m sevanya.db clear-history   # delete chats, keep the journal and the list
+```
+
+**Before any overhaul, run `backup`.** One second, and everything after it is
+reversible.
+
+### Clearing history keeps what she learned
+
+`clear-history` deletes conversations and messages. The journal, the task list
+and the notices stay. That works because `journal` and `task_list` reference
+conversations `ON DELETE SET NULL` while `messages` is `ON DELETE CASCADE` — so
+removing a thread takes its transcript and leaves her notes standing with the
+link blanked. It only holds with foreign keys enforced, which is set on every
+connection; don't remove that pragma.
+
+It asks first and takes a backup before deleting. `--keep-days 7` keeps recent
+threads; `--yes` skips the prompt.
+
+### CREATE TABLE IF NOT EXISTS is not a migration
+
+`IF NOT EXISTS` means *table*, not *schema*. SQLite sees the table is there and
+stops reading — it never compares the definition against the real one. So a
+change that adds or renames a column lands in `store.py`, does nothing to the
+database, and says nothing until an INSERT that looks obviously correct dies
+with `no such column`, hours later and nowhere near the cause.
+
+So schema changes go through `migrations.py`: an explicit `ALTER`, against a
+version number, run once. Editing `SCHEMA` alone does nothing to a database
+that already exists.
+
+And in case someone forgets, `Store` **refuses to open** a database whose
+columns don't match what the code expects, with a message naming the missing
+column. A clear failure at startup beats a puzzling one at the first write.
+
+### Old rows keep their old shape
+
+Message content is stored as JSON and read back as whatever shape it went in
+as. Change the shape and old rows still hold the old one, so reopening an old
+conversation breaks in a way that has nothing to do with the new code.
+`check` finds those rows before they find you; `clear-history` removes them
+along with the threads they're in.
+
+### Why `.backup` and not `cp`
+
+`journal_mode` is WAL, so recent commits can still be sitting in
+`sevanya.db-wal` rather than the main file. Copying the one file can silently
+lose the newest notes — in the test that pins this, with the WAL never
+checkpointed, the naive copy has **no tables at all**. `store.backup()` uses
+SQLite's own backup, which folds the WAL in and is safe while something else is
+writing.
 
 ## Notes to self
 
