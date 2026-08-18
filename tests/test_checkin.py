@@ -25,10 +25,13 @@ class FakeAgent:
 
     written = "You left the parser loop half-rewritten — worth picking that up."
 
-    def __init__(self, store, conversation_id, system_extra=""):
+    def __init__(self, store, conversation_id, system_extra="", backend=None):
         self.store = store
         self.conversation_id = conversation_id
         self.system_extra = system_extra
+        # Accepted because the real Agent takes it: the check-in can be routed
+        # to a cheaper model than the conversation uses.
+        self.backend = backend
 
     def send(self, text):
         self.store.append_message(self.conversation_id, "user", text)
@@ -207,3 +210,40 @@ def test_a_failed_attempt_does_not_count_as_having_nudged(quiet):
 
     checkin.run_once(quiet, make_agent=Broken)
     assert checkin.due(quiet)
+
+
+# --- routing ----------------------------------------------------------------
+
+
+def test_the_check_in_can_run_on_a_cheaper_model(monkeypatch):
+    """It runs unattended, once a day, and writes two sentences.
+
+    That is not the work that needs your best model.
+    """
+    from sevanya import backends
+
+    monkeypatch.setenv("SEVANYA_CHECKIN_BACKEND", "local")
+    monkeypatch.setenv("SEVANYA_LOCAL_MODEL", "small-and-cheap")
+    chosen = checkin.backend_for_checkin()
+    assert isinstance(chosen, backends.LocalBackend)
+    assert chosen.model == "small-and-cheap"
+
+
+def test_without_that_variable_it_uses_whatever_she_uses(monkeypatch):
+    """None means "don't override" — Agent then chooses for itself."""
+    monkeypatch.delenv("SEVANYA_CHECKIN_BACKEND", raising=False)
+    assert checkin.backend_for_checkin() is None
+
+
+def test_the_backend_is_handed_to_the_agent(quiet, monkeypatch):
+    """Choosing one and not passing it on would be a silent no-op."""
+    seen = {}
+
+    class Recording(FakeAgent):
+        def __init__(self, store, conversation_id, system_extra="", backend=None):
+            seen["backend"] = backend
+            super().__init__(store, conversation_id, system_extra, backend)
+
+    monkeypatch.setattr(checkin, "backend_for_checkin", lambda: "the cheap one")
+    checkin.run_once(quiet, make_agent=Recording)
+    assert seen["backend"] == "the cheap one"

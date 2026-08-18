@@ -23,7 +23,7 @@ from _collections_abc import Callable
 
 # Bumped by adding to MIGRATIONS. A fresh database is stamped with this
 # straight away, because SCHEMA already builds the current shape.
-LATEST = 2
+LATEST = 3
 
 
 class SchemaMismatch(RuntimeError):
@@ -35,7 +35,7 @@ class SchemaMismatch(RuntimeError):
 # how a drift check gives false confidence, so add to this in the same commit
 # as the migration.
 EXPECTED = {
-    "conversations": {"id", "title", "created_at", "updated_at"},
+    "conversations": {"id", "title", "kind", "created_at", "updated_at"},
     "messages": {"id", "conversation_id", "role", "content", "model", "created_at"},
     "journal": {"id", "topic", "note", "conversation_id", "created_at"},
     "task_list": {"id", "task", "done", "conversation_id", "created_at", "completed_at"},
@@ -65,8 +65,19 @@ def _add_message_model(conn: sqlite3.Connection) -> None:
     add_column(conn, "messages", "model", "TEXT")
 
 
+def _add_conversation_kind(conn: sqlite3.Connection) -> None:
+    """Separate the conversations you had from errands she ran.
+
+    Everything that already exists is yours by definition — sub-agents didn't
+    exist when those rows were written — so the default backfills correctly
+    without a second statement.
+    """
+    add_column(conn, "conversations", "kind", "TEXT NOT NULL DEFAULT 'chat'")
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (2, "messages.model — which model wrote each turn", _add_message_model),
+    (3, "conversations.kind — yours, or an errand she ran", _add_conversation_kind),
 ]
 
 

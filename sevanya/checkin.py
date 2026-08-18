@@ -81,6 +81,19 @@ def _parse(stamp: str) -> datetime:
     return datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
 
 
+def backend_for_checkin():
+    """Which model writes the nudge.
+
+    SEVANYA_CHECKIN_BACKEND exists because this runs unattended, once a day,
+    and a two-sentence "you left the parser half-done" is not the work that
+    needs your best model. Unset, it uses whatever the conversation uses.
+    """
+    from . import backends
+
+    name = os.environ.get("SEVANYA_CHECKIN_BACKEND")
+    return backends.choose(name) if name else None
+
+
 def run_once(store, make_agent=None) -> str | None:
     """Write one check-in. Returns the text, or None if it couldn't.
 
@@ -92,7 +105,8 @@ def run_once(store, make_agent=None) -> str | None:
 
     conversation_id = store.new_conversation(title="check-in")
     try:
-        agent = (make_agent or Agent)(store, conversation_id, system_extra=EXTRA)
+        agent = (make_agent or Agent)(store, conversation_id, system_extra=EXTRA,
+                                      backend=backend_for_checkin())
         text = agent.send(PROMPT)
     except Exception as exc:
         store.notify("checkin-failed", f"couldn't write the check-in ({type(exc).__name__}: {exc})")

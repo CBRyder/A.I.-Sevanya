@@ -158,6 +158,32 @@ TOOLS = [
         },
     },
     {
+        "name": "delegate",
+        "description": (
+            "Hand a piece of reading to a helper and get back a short answer. "
+            "Use it when finding out would take several file reads or a wide "
+            "search — 'how does the save system work', 'where is the collision "
+            "code and what does it do', 'read these four files and tell me "
+            "what changed'. The helper reads in its own context and returns a "
+            "paragraph, so a big search costs this conversation almost "
+            "nothing, which is what keeps room for the thing the user is "
+            "actually working on. Ask a specific question rather than naming a "
+            "topic; it can't see this conversation and only gets the sentence "
+            "you write. For one known file, read_file is quicker and better."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The question, whole and self-contained, e.g. 'Find where the "
+                                   "player save file is written and summarise the format.'",
+                }
+            },
+            "required": ["task"],
+        },
+    },
+    {
         "name": "reload",
         "description": (
             "Restart yourself so that changes on disk take effect: new code, "
@@ -601,6 +627,30 @@ def notify_phone(message: str, title: str = "Sevanya", *, store, conversation_id
     return f"sent to their phone: {title} — {message}" if ok else f"couldn't send it: {detail}"
 
 
+# --- handing work to a helper -----------------------------------------------
+
+
+def delegate(task: str, *, store, conversation_id) -> str:
+    """Run a sub-agent and return what it found.
+
+    Imported here rather than at the top: subagent imports this module for the
+    tool definitions, and importing it back at module level would be a cycle.
+    """
+    from . import subagent
+
+    task = task.strip()
+    if not task:
+        return "nothing to delegate — the task was empty"
+
+    try:
+        return subagent.run(task, store=store, parent_conversation_id=conversation_id)
+    except Exception as exc:
+        # Returned rather than raised, like every other tool: the helper
+        # failing is something she can tell the user about and work around,
+        # not a reason for the whole turn to die.
+        return f"the helper failed ({type(exc).__name__}: {exc})"
+
+
 # --- reloading --------------------------------------------------------------
 
 
@@ -706,6 +756,7 @@ REGISTRY = {
     "complete_task": complete_task,
     "remove_task": remove_task,
     "list_tasks": list_tasks,
+    "delegate": delegate,
     "reload": reload,
     "notify_phone": notify_phone,
 }
@@ -714,7 +765,7 @@ REGISTRY = {
 # at runtime — you can see at a glance which tools touch persistent state.
 NEEDS_STORE = {"remember", "recall",
                "add_task", "complete_task", "remove_task", "list_tasks",
-               "reload", "notify_phone"}
+               "reload", "notify_phone", "delegate"}
 
 
 def dispatch(name: str, arguments: dict, *, store=None, conversation_id=None) -> tuple[str, bool]:

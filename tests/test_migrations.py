@@ -443,7 +443,10 @@ def test_a_migration_that_ran_still_counts_even_if_the_file_is_refused(raw):
         migrations.initialise(raw, SCHEMA)
 
     assert "model" in migrations.columns(raw, "messages"), "the migration didn't run"
-    assert migrations.version(raw) == 2, "the migration ran but wasn't recorded"
+    # LATEST rather than a literal: every pending migration ran, and hard-coding
+    # the number here would mean editing this test for each new one, which is
+    # how a test stops describing anything.
+    assert migrations.version(raw) == migrations.LATEST, "they ran but weren't recorded"
 
 
 def test_a_database_with_work_waiting_is_not_stamped_ahead(raw, monkeypatch):

@@ -35,6 +35,11 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     id         INTEGER PRIMARY KEY,
     title      TEXT,
+    -- 'chat' for yours, 'subagent' for work she delegated. Kept rather than
+    -- discarded — when a delegated answer turns out to be wrong, reading what
+    -- it actually did is the only way to find out why — but filtered out of
+    -- the list, because they aren't conversations you had.
+    kind       TEXT NOT NULL DEFAULT 'chat',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -188,8 +193,9 @@ class Store:
 
     # --- conversations ------------------------------------------------------
 
-    def new_conversation(self, title: str | None = None) -> int:
-        cur = self.db.execute("INSERT INTO conversations (title) VALUES (?)", (title,))
+    def new_conversation(self, title: str | None = None, kind: str = "chat") -> int:
+        cur = self.db.execute(
+            "INSERT INTO conversations (title, kind) VALUES (?, ?)", (title, kind))
         self.db.commit()
         return cur.lastrowid
 
@@ -205,12 +211,19 @@ class Store:
         ).fetchone()
         return row is not None
 
-    def list_conversations(self, limit: int = 10) -> list[sqlite3.Row]:
+    def list_conversations(self, limit: int = 10, kind: str | None = "chat") -> list[sqlite3.Row]:
+        """Yours, newest first. Sub-agent runs are excluded by default.
+
+        They're transcripts of errands, not conversations, and a list where
+        every question you ask spawns three entries is a list you stop opening.
+        """
+        where = "WHERE c.kind = :kind" if kind else ""
         return self.db.execute(
-            """SELECT c.id, c.title, c.updated_at, COUNT(m.id) AS n
+            f"""SELECT c.id, c.title, c.updated_at, COUNT(m.id) AS n
                FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id
-               GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?""",
-            (limit,),
+               {where}
+               GROUP BY c.id ORDER BY c.updated_at DESC LIMIT :limit""",
+            {"limit": limit, "kind": kind},
         ).fetchall()
 
     def set_title(self, conversation_id: int, title: str) -> None:
