@@ -100,6 +100,9 @@ QR code or a Shortcut; the token is saved and stripped from the URL.
 | `POST /api/ask` | Siri Shortcut | blocking, one blob of text |
 | `GET /api/health` | the restart flow | is it up, does it want a token — no auth |
 | `GET /api/notifications` | Notices | the log, newest first |
+| `GET /api/db` | Data | schema state, counts, backups |
+| `POST /api/db/backup` | Data | take a backup |
+| `POST /api/db/clear-history` | Data | delete chats, keep the journal |
 | `GET /api/conversations` | both | recent threads |
 | `GET /api/conversations/{id}` | both | readable transcript |
 
@@ -343,6 +346,25 @@ sevanya/
 ```
 
 ## Looking after the database
+
+**From the phone — the Data button.** It shows what `check` prints (counts,
+schema version, drift, unloadable rows, recent backups) and does the two things
+worth doing: back up, and clear the chat history. The confirmation happens in
+the page. Answering a terminal prompt on the PC defeats the point of running
+this on the phone.
+
+| endpoint | |
+|---|---|
+| `GET /api/db` | everything `check` prints, as JSON |
+| `POST /api/db/backup` | a WAL-safe copy |
+| `POST /api/db/clear-history` | needs `{"confirm": true}` — always backs up first |
+
+`confirm` is not implied by having made the request, and there is deliberately
+no way to skip the backup over HTTP. On the command line you're standing at the
+machine and can insist; from a phone, one mis-tap shouldn't be the end of the
+transcripts. Clearing is recorded in the notices, naming the backup it took.
+
+**From the machine**, the same things:
 
 ```bash
 python -m sevanya.db check           # version, drift, contents, unloadable rows

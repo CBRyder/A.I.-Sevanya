@@ -254,3 +254,44 @@ def test_a_reload_reloads_the_page_rather_than_just_re_syncing():
     """
     flow = HTML.split("bind('restart-go'")[1]
     assert "location.reload()" in flow
+
+
+# --- maintenance, confirmed on the device ----------------------------------
+
+
+def test_clearing_history_is_confirmed_in_the_page():
+    """The whole request: confirm here, not at a prompt on the desktop."""
+    assert "confirm-clear" in MARKUP_IDS
+    assert "confirm-clear-yes" in MARKUP_IDS
+    assert "confirm-clear-no" in MARKUP_IDS
+    body = HTML.split('id="confirm-clear"')[1]
+    assert "Delete the conversations?" in body
+
+
+def test_the_clear_button_only_opens_the_confirmation():
+    """One tap must not delete anything.
+
+    The button that starts this sits next to 'Back up' in a panel someone is
+    poking around in.
+    """
+    handler = HTML.split("bind('db-clear'")[1].split("bind('confirm-clear-no'")[0]
+    assert "/api/db/clear-history" not in handler
+    assert "setAttribute('data-open'" in handler
+
+
+def test_the_delete_request_says_confirm_explicitly():
+    flow = HTML.split("bind('confirm-clear-yes'")[1]
+    assert "/api/db/clear-history" in flow
+    assert "confirm: true" in flow
+
+
+def test_the_page_offers_no_way_to_skip_the_backup():
+    """The CLI has --no-backup. Over HTTP that shouldn't exist at all."""
+    assert "no_backup" not in HTML
+    assert "no-backup" not in HTML
+
+
+def test_the_stale_conversation_id_is_dropped_after_clearing():
+    """Otherwise the page shows a transcript the server has just forgotten."""
+    flow = HTML.split("bind('confirm-clear-yes'")[1]
+    assert "removeItem('conversationId')" in flow

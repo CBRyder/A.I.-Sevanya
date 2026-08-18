@@ -455,6 +455,14 @@ class Store:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         return self.backup(directory / f"sevanya-{stamp}.db")
 
+    def list_backups(self, directory: Path | None = None, limit: int = 10) -> list[dict]:
+        """Recent backups, newest first. Shown so you can see one was taken."""
+        directory = Path(directory) if directory else self._path.parent / "backups"
+        if not directory.is_dir():
+            return []
+        found = sorted(directory.glob("sevanya-*.db"), key=lambda p: p.name, reverse=True)
+        return [{"name": p.name, "bytes": p.stat().st_size} for p in found[:limit]]
+
     def counts(self) -> dict[str, int]:
         """How much of each thing there is. For showing before and after."""
         out = {}

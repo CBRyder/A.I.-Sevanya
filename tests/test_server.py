@@ -423,3 +423,149 @@ def test_the_checkin_thread_is_not_started_at_import(tmp_path, monkeypatch, bloc
     build(tmp_path, monkeypatch, answer(blocks))
     after = {t.name for t in threading.enumerate()}
     assert "sevanya-checkin" not in after - before
+
+
+# --- maintenance from the phone --------------------------------------------
+
+
+def seed_db(server, blocks):
+    conversation = server.store.new_conversation(title="a chat")
+    server.store.append_message(conversation, "user", "hello")
+    server.store.append_message(conversation, "assistant", [blocks(type="text", text="hi")])
+    server.store.remember("topic", "a note worth keeping", conversation)
+    server.store.add_task("a task worth keeping")
+    return conversation
+
+
+def test_the_database_state_is_readable_over_http(tmp_path, monkeypatch, blocks):
+    """Everything the CLI prints, as JSON.
+
+    The point is deciding whether to touch it from a phone, rather than from a
+    terminal on the machine it runs on.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+
+    body = client.get("/api/db").json()
+    assert body["counts"]["conversations"] == 1
+    assert body["schema_version"] == body["schema_expects"]
+    assert body["drift"] == []
+    assert body["pending_migrations"] == []
+    assert body["unloadable"] == 0
+
+
+def test_maintenance_endpoints_need_the_token(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    assert client.get("/api/db").status_code == 401
+    assert client.post("/api/db/backup").status_code == 401
+    assert client.post("/api/db/clear-history", json={"confirm": True}).status_code == 401
+
+
+def test_a_backup_can_be_taken_from_the_phone(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+
+    saved = client.post("/api/db/backup").json()
+    assert saved["name"].startswith("sevanya-")
+    assert saved["bytes"] > 0
+    assert client.get("/api/db").json()["backups"][0]["name"] == saved["name"]
+
+
+def test_clearing_requires_saying_so(tmp_path, monkeypatch, blocks):
+    """Not implied by having made the request.
+
+    A destructive endpoint that fires on an empty body is one stray tap, or one
+    retried request, away from deleting the transcripts.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+
+    assert client.post("/api/db/clear-history", json={}).status_code == 400
+    assert client.post("/api/db/clear-history", json={"confirm": False}).status_code == 400
+    assert server.store.counts()["conversations"] == 1, "it deleted anyway"
+
+
+def test_clearing_keeps_the_journal_and_the_list(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+
+    done = client.post("/api/db/clear-history", json={"confirm": True}).json()
+    assert done["removed"]["conversations"] == 1
+    assert done["counts"]["journal"] == 1
+    assert done["counts"]["task_list"] == 1
+    assert server.store.recall("note"), "her note should still be there"
+
+
+def test_clearing_always_backs_up_first(tmp_path, monkeypatch, blocks):
+    """There's deliberately no way to skip it over HTTP.
+
+    On the command line you're standing at the machine and can insist. From a
+    phone, one mis-tap shouldn't be the end of the transcripts.
+    """
+    import sqlite3
+
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+
+    done = client.post("/api/db/clear-history", json={"confirm": True}).json()
+    saved = tmp_path / "backups" / done["backup"]
+    assert saved.exists()
+
+    conn = sqlite3.connect(saved)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+    conn.close()
+
+
+def test_recent_threads_can_be_kept_from_the_phone(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    old = server.store.new_conversation(title="last month")
+    server.store.append_message(old, "user", "old")
+    server.store.db.execute(
+        "UPDATE conversations SET updated_at = datetime('now', '-40 days') WHERE id = ?", (old,))
+    server.store.db.commit()
+    recent = server.store.new_conversation(title="today")
+    server.store.append_message(recent, "user", "new")
+
+    client.post("/api/db/clear-history", json={"confirm": True, "keep_days": 7})
+    assert [row["title"] for row in server.store.list_conversations()] == ["today"]
+
+
+def test_clearing_is_recorded_in_the_notices(tmp_path, monkeypatch, blocks):
+    """Destructive and remote. It should leave a trace naming the backup."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    seed_db(server, blocks)
+    client.post("/api/db/clear-history", json={"confirm": True})
+
+    notices = client.get("/api/notifications").json()
+    cleared = [n for n in notices if n["kind"] == "clear-history"]
+    assert cleared
+    assert "backup:" in cleared[0]["message"]
+
+
+def test_drift_is_reported_over_http_when_there_is_some(tmp_path, monkeypatch, blocks):
+    """Asserting it's empty on a healthy database proves nothing.
+
+    A hardcoded [] passes that. The database is drifted here after the store is
+    already open, which is also the only way to reach this state at runtime —
+    Store refuses to open a drifted file in the first place.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    server.store.db.execute("ALTER TABLE journal RENAME COLUMN note TO note_old")
+    server.store.db.commit()
+
+    body = client.get("/api/db").json()
+    assert body["drift"] == ["journal.note is missing"]
+
+
+def test_unloadable_rows_are_reported_over_http(tmp_path, monkeypatch, blocks):
+    """Same reasoning: zero on a clean database proves nothing."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    conversation = server.store.new_conversation()
+    server.store.db.execute(
+        "INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)",
+        (conversation, "assistant", '{"old": "shape"}'))
+    server.store.db.commit()
+
+    body = client.get("/api/db").json()
+    assert body["unloadable"] == 1
+    assert "expected a string or a list of blocks" in body["unloadable_sample"][0]["why"]
