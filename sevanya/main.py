@@ -4,14 +4,70 @@
     python -m sevanya.main --new     start a fresh one
     python -m sevanya.main --list    show recent conversations
     python -m sevanya.main --id 7    resume a specific one
+
+Type /rc mid-conversation to bring the web server up without leaving.
 """
 
 import argparse
+import os
+import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from .agent import Agent
 from .store import DB_PATH, Store
 from .tools import PROJECT_ROOT
+
+# Read straight from the environment rather than importing server.py, which
+# pulls in fastapi and builds a Store just to learn one number.
+PORT = int(os.environ.get("SEVANYA_PORT", "8765"))
+
+
+def _server_is_up(port: int, timeout: float = 1.0) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def start_web(port: int = PORT, wait: float = 25.0) -> str:
+    """Start the web server in its own process. Returns a line to print.
+
+    Launched from this directory on purpose: PROJECT_ROOT is wherever the
+    process starts, and that's the only place she can read. Starting the
+    server somewhere else would quietly give the phone a different view of
+    your files than the terminal has.
+
+    `python -m sevanya`, not `-m sevanya.server`, so it checks requirements
+    before importing anything that needs them.
+    """
+    if _server_is_up(port):
+        return f"already running — http://localhost:{port}"
+
+    if os.name == "nt":
+        # Its own console window, so it doesn't scribble over this
+        # conversation and can be stopped without killing the REPL.
+        creation = subprocess.CREATE_NEW_CONSOLE
+        process = subprocess.Popen([sys.executable, "-m", "sevanya"],
+                                   cwd=str(PROJECT_ROOT), creationflags=creation)
+    else:
+        process = subprocess.Popen([sys.executable, "-m", "sevanya"],
+                                   cwd=str(PROJECT_ROOT), start_new_session=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if _server_is_up(port):
+            return f"web server up — http://localhost:{port}  (pid {process.pid})"
+        if process.poll() is not None:
+            return (f"the server exited immediately (code {process.returncode}). "
+                    f"Run `python -m sevanya` here to see why.")
+        time.sleep(0.4)
+
+    return f"started (pid {process.pid}) but nothing answered on :{port} within {wait:g}s"
 
 
 def main() -> int:
@@ -59,6 +115,13 @@ def main() -> int:
             continue
         if user_input in {"exit", "quit"}:
             return 0
+
+        # Handled here rather than sent to her: it's an instruction to this
+        # program, not a question for her. Every other slash command — /show
+        # among them — goes through untouched, because those are hers.
+        if user_input.lower() in {"/rc", "/web"}:
+            print(f"\n{start_web()}\n")
+            continue
 
         if needs_title:
             store.set_title(conversation_id, user_input[:60])

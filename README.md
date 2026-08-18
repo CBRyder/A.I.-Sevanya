@@ -44,6 +44,11 @@ python -m sevanya              # the server: checks requirements, then serves
 Set `SEVANYA_SKIP_DEPS=1` to start without checking, for working offline or
 managing the environment yourself. `SEVANYA_PORT` moves it off 8765.
 
+Mid-conversation, `/rc` brings the web server up without leaving — started in
+the directory you're already in, so the phone sees the same files the terminal
+does. Every other slash command still goes to her; `/show` is hers, `/rc` is
+the program's.
+
 The terminal REPL:
 
 ```bash
