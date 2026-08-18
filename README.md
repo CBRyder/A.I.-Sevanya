@@ -84,6 +84,10 @@ sevanya/
   notes get injected into the system prompt; older ones it has to `recall`.
 - `recall` searches the journal **and** past conversation text. Tool results are
   excluded — they're file dumps, and matching inside them is noise.
+- `grep` is literal and case-insensitive, **not** a regex — an identifier with a
+  `.` or `(` in it shouldn't turn into pattern syntax. It caps at
+  `MAX_MATCHES` hits and skips build dirs, dotfiles and anything that isn't
+  UTF-8.
 - **Thread policy:** every Siri request starts a fresh conversation. Continuity
   comes from `recall` searching history, not from carrying a transcript. If it
   can't find what I'm referring to it asks, rather than guessing.

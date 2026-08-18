@@ -16,6 +16,21 @@ PROJECT_ROOT = Path.cwd().resolve()
 # but every character costs context window, so cap it.
 MAX_CHARS = 40_000
 
+# Caps for grep, for the same reason. A hit list is only useful if it fits in
+# a glance: past a hundred matches the answer isn't "here they are", it's
+# "your pattern is too common".
+MAX_MATCHES = 100
+MAX_LINE = 200
+
+# Anything bigger than this is not source. It's a build artifact, a database,
+# a vendored bundle — slow to read and matching inside it tells you nothing.
+MAX_GREP_BYTES = 1_000_000
+
+# Directories worth never descending into. Same spirit as the filter in
+# list_files: these are noise you did not write.
+SKIP_DIRS = {"__pycache__", "node_modules", ".venv", "venv", ".git", ".mypy_cache",
+             ".pytest_cache", "dist", "build", ".tox"}
+
 
 # --- Tool schemas -----------------------------------------------------------
 #
@@ -61,28 +76,29 @@ TOOLS = [
         },
     },
     {
-            "name": "grep",
-            "description": (
-                "Search for text across files in the user's project. Use this when"
-                "you need to find where something lives - a function, a variable, a "
-                "string - and you don't already know which file it'sin. Prefer this "
-                "over reading files one at a time to hunt for something,"
-            ),
-            "input_Schema": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Text to search for, e.g. 'MAX_STEPS' ",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search, relative to the project root. "
-                        "Omit to search the whole project.",
-                    },
+        "name": "grep",
+        "description": (
+            "Search for text across files in the user's project. Use this when "
+            "you need to find where something lives — a function, a variable, a "
+            "string — and you don't already know which file it's in. Prefer this "
+            "over reading files one at a time to hunt for something. Matching is "
+            "plain substring, case-insensitive; it is not a regular expression."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Text to search for, e.g. 'MAX_STEPS'",
                 },
-                "required": ["pattern"],
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search, relative to the project "
+                    "root. Omit to search the whole project.",
+                },
             },
+            "required": ["pattern"],
+        },
     },
     {
         "name": "remember",
@@ -182,6 +198,89 @@ def list_files(path: str = ".") -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
+def _searchable(path: Path) -> bool:
+    """Whether a file is worth opening at all.
+
+    Cheap checks only — size and a read attempt. Sniffing file types properly
+    is a rabbit hole; a binary simply fails to decode as UTF-8 and gets
+    skipped by the caller, which is the same outcome for less code.
+    """
+    try:
+        return path.is_file() and path.stat().st_size <= MAX_GREP_BYTES
+    except OSError:
+        return False
+
+
+def grep(pattern: str, path: str = ".") -> str:
+    """Substring search across the project, one line per hit.
+
+    Case-insensitive and literal, not a regular expression. That's a choice,
+    not a shortcut: the model reaches for this knowing a name it saw, and a
+    stray '.' or '(' in an identifier turning into regex syntax produces
+    confidently wrong results. If literal matching starts failing, add regex
+    then — same reasoning as store.recall.
+    """
+    if not pattern:
+        raise ValueError("pattern is empty — give me something to search for")
+
+    target = _resolve(path)
+    if not target.exists():
+        raise FileNotFoundError(f"no such file or directory: {path}")
+
+    if target.is_file():
+        candidates = [target]
+    else:
+        candidates = []
+        for child in sorted(target.rglob("*")):
+            # Skip the whole subtree, not just the directory entry itself.
+            if any(part in SKIP_DIRS or part.startswith(".") for part in
+                   child.relative_to(PROJECT_ROOT).parts[:-1]):
+                continue
+            if child.name.startswith("."):
+                continue
+            if _searchable(child):
+                candidates.append(child)
+
+    needle = pattern.lower()
+    hits = []
+    truncated = False
+
+    for file in candidates:
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # binary, or unreadable — either way, not source
+
+        if needle not in text.lower():
+            continue  # one scan of the whole file beats scanning line by line
+
+        rel = file.relative_to(PROJECT_ROOT)
+        for number, line in enumerate(text.splitlines(), start=1):
+            if needle not in line.lower():
+                continue
+            line = line.strip()
+            if len(line) > MAX_LINE:
+                line = line[:MAX_LINE] + "…"
+            hits.append(f"{rel}:{number}: {line}")
+            if len(hits) >= MAX_MATCHES:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    if not hits:
+        # Same principle as recall: say plainly that there's nothing, so the
+        # model asks or retries rather than inventing a location.
+        return (
+            f"No matches for {pattern!r} under {path!r}. "
+            f"Matching is literal — try a shorter or differently-spelled term."
+        )
+
+    if truncated:
+        hits.append(f"[stopped at {MAX_MATCHES} matches — narrow the pattern or the path]")
+    return "\n".join(hits)
+
+
 # --- journal tools ----------------------------------------------------------
 #
 # Note that these *do* write — but they write Sevanya's own notes, never your
@@ -229,6 +328,7 @@ def recall(query: str, *, store, conversation_id) -> str:
 REGISTRY = {
     "read_file": read_file,
     "list_files": list_files,
+    "grep": grep,
     "remember": remember,
     "recall": recall,
 }
