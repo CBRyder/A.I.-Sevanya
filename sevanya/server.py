@@ -14,6 +14,9 @@ Everything intelligent stays here on the PC. The phone is a thin client.
 
 import json
 import os
+import sys
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
@@ -21,8 +24,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import checkin, deps, lifecycle, push
 from .agent import Agent
-from .store import Store
+from .store import CHECKIN_MARKER, Store
 from .tools import PROJECT_ROOT
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -33,6 +37,11 @@ WEB_DIR = Path(__file__).parent / "web"
 # on your machine.
 TOKEN = os.environ.get("SEVANYA_TOKEN")
 
+# 8765 unless told otherwise. Configurable mostly so a second copy — a test,
+# or a throwaway one pointed at another project — doesn't have to fight the
+# one you actually use for the port.
+PORT = int(os.environ.get("SEVANYA_PORT", "8765"))
+
 # Appended to the system prompt for /ask only. Siri reads the reply aloud, and
 # anything longer than a few sentences is unbearable through a speaker.
 SPOKEN = """
@@ -42,8 +51,49 @@ is meaningless without one. If the honest answer needs more room than that, give
 the short version and say the detail is worth looking at on a screen.
 """
 
+# When this process image started. execv keeps the PID, so the pid alone can't
+# tell "it restarted" from "nothing happened" — this can, and the restart
+# button uses it to confirm the server really came back rather than never
+# having gone away.
+STARTED = time.time()
+
 app = FastAPI(title="Sevanya")
 store = Store()
+
+# Tells the `reload` tool there's a server here to restart. The terminal REPL
+# never imports this module, so there it correctly reports nothing to do.
+lifecycle.mark_server_running()
+
+# Check the requirements on the way up and record the answer, so a start that
+# lands in a broken environment leaves a note saying so — otherwise the only
+# evidence is a traceback in a terminal nobody is looking at.
+#
+# This is the backstop. `python -m sevanya` has already done it before
+# importing anything, which is the only place a genuinely missing dependency
+# can be fixed; this catches the case where someone started the server module
+# directly, and anything that went missing since.
+# SEVANYA_SKIP_DEPS means skip the check, not "check but don't fix" — a flag
+# that half-applies is worse than no flag.
+if os.environ.get("SEVANYA_SKIP_DEPS"):
+    _deps_ok, _deps_report = True, "requirements not checked (SEVANYA_SKIP_DEPS)"
+else:
+    _deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=True)
+    if push.is_public():
+        # Not an error, but not something to discover later either.
+        store.notify(
+            "push",
+            "notifications are going through the public ntfy.sh — anyone who "
+            "guesses the topic can read them. See deploy/ntfy-compose.yml to "
+            "self-host.",
+        )
+
+    if not _deps_ok:
+        # A server that came up wrong is exactly the thing you'd otherwise
+        # only discover by walking to the machine.
+        push.send_and_log(store, _deps_report.splitlines()[0],
+                          title="Sevanya started with problems", priority="high")
+store.notify("startup", f"server started — {_deps_report}")
+store.trim_notifications()
 
 # App icons, referenced by manifest.json and the apple-touch-icon link. iOS
 # will happily "Add to Home Screen" without them and give you a blurry
@@ -123,6 +173,60 @@ def ask(body: AskIn, authorization: str | None = Header(default=None)):
     return {"reply": agent.send(body.message), "conversation_id": conversation_id}
 
 
+@app.get("/api/health")
+def health():
+    """Is the server there, and does it want a token?
+
+    Deliberately the one endpoint that doesn't require auth. The client needs
+    to tell "the server is gone" apart from "the server is fine and my token is
+    wrong", and it can't do that if the check itself returns 401 in both cases.
+    It reveals only whether a token is needed, which anyone who can reach this
+    port finds out from their first request anyway.
+    """
+    return {"ok": True, "auth_required": bool(TOKEN), "started": STARTED}
+
+
+@app.post("/api/restart")
+def restart(authorization: str | None = Header(default=None)):
+    """Restart the server process.
+
+    Requires the token when one is set — this is the one endpoint that does
+    something to the machine rather than reading from it. With no token set,
+    anything that can reach the port can bounce the server; that's the same
+    exposure as every other endpoint here, but it's worth knowing.
+
+    In-flight streams die with the old process. The client polls /api/health
+    and picks its thread back up from the database, which is on disk and
+    unaffected.
+    """
+    _auth(authorization)
+    lifecycle.schedule_restart()
+    return {"restarting": True, "pid": os.getpid()}
+
+
+@app.get("/api/notifications")
+def notifications(authorization: str | None = Header(default=None)):
+    """What's happened to her lately — restarts, installs, errors.
+
+    Read-only, like the task list: this is a log of things that happened, and
+    there is nothing here for a client to change.
+    """
+    _auth(authorization)
+    return [dict(row) for row in store.notifications()]
+
+
+@app.get("/api/tasks")
+def tasks(include_done: bool = True, authorization: str | None = Header(default=None)):
+    """The task list, for reading.
+
+    Read-only by design: this is Sevanya's list of what she thinks you should
+    do, not a to-do app you fill in. There's no endpoint to add or tick one
+    off from the phone, because the list means nothing if it's yours.
+    """
+    _auth(authorization)
+    return [dict(row) for row in store.list_tasks(include_done=include_done)]
+
+
 @app.get("/api/conversations")
 def conversations(authorization: str | None = Header(default=None)):
     _auth(authorization)
@@ -148,6 +252,11 @@ def history(conversation_id: int, authorization: str | None = Header(default=Non
     for message in store.load_messages(conversation_id):
         content = message["content"]
         if isinstance(content, str):
+            # The prompt that opens an automatic check-in is an instruction to
+            # her, not something the user said. Showing it would put words in
+            # their mouth in their own transcript.
+            if content.startswith(CHECKIN_MARKER):
+                continue
             text = content
         else:
             text = "\n".join(
@@ -174,9 +283,15 @@ def main() -> None:
 
     print(f"Sevanya server — reading from {PROJECT_ROOT}")
     print(f"auth: {'bearer token required' if TOKEN else 'OPEN (set SEVANYA_TOKEN to lock)'}")
+    print(f"listening on :{PORT}")
+
+    # Started here rather than at import, so importing the module for a test
+    # doesn't spawn a thread that talks to the API.
+    if checkin.start(store):
+        print(f"check-in: after {checkin.interval_hours():g}h of quiet")
     # 0.0.0.0 so your phone can reach it over Tailscale. On a machine that is
     # NOT on a private network, this listens on every interface — set a token.
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":

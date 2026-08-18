@@ -21,6 +21,12 @@ from pathlib import Path
 # repos, and its memory of you shouldn't reset because you cd'd somewhere else.
 DB_PATH = Path.home() / ".sevanya" / "sevanya.db"
 
+# Marks the synthetic turn that opens an automatic check-in. Defined here as
+# well as in checkin.py would be two places to get it wrong, so checkin.py
+# imports nothing and this is the copy the SQL uses — they're asserted equal in
+# the tests.
+CHECKIN_MARKER = "[sevanya:auto]"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     id         INTEGER PRIMARY KEY,
@@ -51,6 +57,34 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 
 CREATE INDEX IF NOT EXISTS idx_journal_topic ON journal(topic);
+
+-- What you've said you're going to do. Distinct from the journal: the journal
+-- is what Sevanya noticed about how you're learning, and it's write-once. This
+-- is a working list with a lifecycle — added, completed, or dropped when it
+-- turns out not to matter.
+CREATE TABLE IF NOT EXISTS task_list (
+    id              INTEGER PRIMARY KEY,
+    task            TEXT NOT NULL,
+    done            INTEGER NOT NULL DEFAULT 0,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_list_open ON task_list(done, id);
+
+-- A log of things that happened to Sevanya herself rather than in a
+-- conversation: restarts, dependency installs, repos synced, errors. It exists
+-- because most of these happen while nobody is looking at the terminal — the
+-- whole point is that she runs on the PC and you're on the phone.
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_id ON notifications(id DESC);
 """
 
 
@@ -263,6 +297,129 @@ class Store:
             "SELECT topic, note, created_at FROM journal ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+
+    # --- the task list ------------------------------------------------------
+    #
+    # CREATE TABLE IF NOT EXISTS means an existing ~/.sevanya/sevanya.db picks
+    # this up the next time Sevanya starts. There's no migration to run.
+
+    def add_task(self, task: str, conversation_id: int | None = None) -> int:
+        cur = self.db.execute(
+            "INSERT INTO task_list (task, conversation_id) VALUES (?, ?)",
+            (task, conversation_id),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def get_task(self, task_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT id, task, done, created_at, completed_at FROM task_list WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+    def complete_task(self, task_id: int) -> bool:
+        """Mark one done. False if there's no such task.
+
+        Completing something already complete is not an error — it's a no-op
+        with an honest answer, because the interesting failure is naming a task
+        that doesn't exist.
+        """
+        cur = self.db.execute(
+            "UPDATE task_list SET done = 1, completed_at = datetime('now') WHERE id = ?",
+            (task_id,),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def reopen_task(self, task_id: int) -> bool:
+        cur = self.db.execute(
+            "UPDATE task_list SET done = 0, completed_at = NULL WHERE id = ?",
+            (task_id,),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def remove_task(self, task_id: int) -> bool:
+        cur = self.db.execute("DELETE FROM task_list WHERE id = ?", (task_id,))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def list_tasks(self, include_done: bool = False, limit: int = 50) -> list[sqlite3.Row]:
+        """Open tasks oldest first — the order you'd work through them."""
+        where = "" if include_done else "WHERE done = 0"
+        return self.db.execute(
+            f"""SELECT id, task, done, created_at, completed_at FROM task_list
+                {where} ORDER BY done, id LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    def open_tasks(self, limit: int = 10) -> list[sqlite3.Row]:
+        # Selects `done` as well, even though it's 0 for every row here, so
+        # these rows have the same shape as list_tasks' and anything that
+        # formats one can format the other. sqlite3.Row raises on a missing
+        # column, so a narrower select turns a shared helper into a crash.
+        return self.db.execute(
+            """SELECT id, task, done, created_at FROM task_list
+               WHERE done = 0 ORDER BY id LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    # --- when did anything last happen ---------------------------------------
+
+    def last_human_message_at(self) -> str | None:
+        """When the person last wrote something.
+
+        Restricted to string content, which is what a typed message is — an
+        assistant turn and a tool_result are both stored as JSON arrays — and
+        excluding the synthetic prompt that opens an automatic check-in, or
+        her own nudges would count as activity and she'd never nudge again.
+        """
+        row = self.db.execute(
+            """SELECT MAX(created_at) AS latest FROM messages
+               WHERE role = 'user'
+                 AND content LIKE '"%'
+                 AND content NOT LIKE ?""",
+            (f'"{CHECKIN_MARKER}%',),
+        ).fetchone()
+        return row["latest"] if row and row["latest"] else None
+
+    def last_checkin_at(self) -> str | None:
+        row = self.db.execute(
+            "SELECT MAX(created_at) AS latest FROM notifications WHERE kind = 'checkin'"
+        ).fetchone()
+        return row["latest"] if row and row["latest"] else None
+
+    # --- notifications ------------------------------------------------------
+
+    def notify(self, kind: str, message: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO notifications (kind, message) VALUES (?, ?)",
+            (kind, message),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def notifications(self, limit: int = 200) -> list[sqlite3.Row]:
+        """Newest first — this is a log you scroll, not a queue you work."""
+        return self.db.execute(
+            "SELECT id, kind, message, created_at FROM notifications ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def trim_notifications(self, keep: int = 500) -> int:
+        """Drop the oldest once the log gets long.
+
+        Unbounded it would grow forever for something nobody reads twice, and
+        it shares a database with the journal, which is the part that matters.
+        """
+        cur = self.db.execute(
+            """DELETE FROM notifications WHERE id NOT IN (
+                   SELECT id FROM notifications ORDER BY id DESC LIMIT ?
+               )""",
+            (keep,),
+        )
+        self.db.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         """Close this thread's connection. Other threads keep their own."""

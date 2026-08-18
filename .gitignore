@@ -5,3 +5,4 @@ venv/
 .env
 scratch/
 *.db
+.pytest_cache/
