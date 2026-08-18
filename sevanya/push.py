@@ -42,8 +42,22 @@ def _config() -> tuple[str, str | None] | None:
     return url, (os.environ.get("SEVANYA_NTFY_TOKEN") or "").strip() or None
 
 
+PUBLIC = "https://ntfy.sh"
+
+
 def configured() -> bool:
     return _config() is not None
+
+
+def is_public() -> bool:
+    """Whether notifications are going through somebody else's server.
+
+    Worth knowing rather than assuming: on the public instance the topic name
+    is the only thing between your notifications and anyone who guesses it, and
+    the contents of what you're building go through a machine you don't run.
+    """
+    config = _config()
+    return config is not None and config[0].startswith(PUBLIC)
 
 
 def where() -> str:

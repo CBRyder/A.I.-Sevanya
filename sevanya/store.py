@@ -21,6 +21,12 @@ from pathlib import Path
 # repos, and its memory of you shouldn't reset because you cd'd somewhere else.
 DB_PATH = Path.home() / ".sevanya" / "sevanya.db"
 
+# Marks the synthetic turn that opens an automatic check-in. Defined here as
+# well as in checkin.py would be two places to get it wrong, so checkin.py
+# imports nothing and this is the copy the SQL uses — they're asserted equal in
+# the tests.
+CHECKIN_MARKER = "[sevanya:auto]"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     id         INTEGER PRIMARY KEY,
@@ -357,6 +363,31 @@ class Store:
                WHERE done = 0 ORDER BY id LIMIT ?""",
             (limit,),
         ).fetchall()
+
+    # --- when did anything last happen ---------------------------------------
+
+    def last_human_message_at(self) -> str | None:
+        """When the person last wrote something.
+
+        Restricted to string content, which is what a typed message is — an
+        assistant turn and a tool_result are both stored as JSON arrays — and
+        excluding the synthetic prompt that opens an automatic check-in, or
+        her own nudges would count as activity and she'd never nudge again.
+        """
+        row = self.db.execute(
+            """SELECT MAX(created_at) AS latest FROM messages
+               WHERE role = 'user'
+                 AND content LIKE '"%'
+                 AND content NOT LIKE ?""",
+            (f'"{CHECKIN_MARKER}%',),
+        ).fetchone()
+        return row["latest"] if row and row["latest"] else None
+
+    def last_checkin_at(self) -> str | None:
+        row = self.db.execute(
+            "SELECT MAX(created_at) AS latest FROM notifications WHERE kind = 'checkin'"
+        ).fetchone()
+        return row["latest"] if row and row["latest"] else None
 
     # --- notifications ------------------------------------------------------
 

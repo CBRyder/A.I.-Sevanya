@@ -24,9 +24,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import deps, lifecycle, push
+from . import checkin, deps, lifecycle, push
 from .agent import Agent
-from .store import Store
+from .store import CHECKIN_MARKER, Store
 from .tools import PROJECT_ROOT
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -78,6 +78,15 @@ if os.environ.get("SEVANYA_SKIP_DEPS"):
     _deps_ok, _deps_report = True, "requirements not checked (SEVANYA_SKIP_DEPS)"
 else:
     _deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=True)
+    if push.is_public():
+        # Not an error, but not something to discover later either.
+        store.notify(
+            "push",
+            "notifications are going through the public ntfy.sh — anyone who "
+            "guesses the topic can read them. See deploy/ntfy-compose.yml to "
+            "self-host.",
+        )
+
     if not _deps_ok:
         # A server that came up wrong is exactly the thing you'd otherwise
         # only discover by walking to the machine.
@@ -243,6 +252,11 @@ def history(conversation_id: int, authorization: str | None = Header(default=Non
     for message in store.load_messages(conversation_id):
         content = message["content"]
         if isinstance(content, str):
+            # The prompt that opens an automatic check-in is an instruction to
+            # her, not something the user said. Showing it would put words in
+            # their mouth in their own transcript.
+            if content.startswith(CHECKIN_MARKER):
+                continue
             text = content
         else:
             text = "\n".join(
@@ -270,6 +284,11 @@ def main() -> None:
     print(f"Sevanya server — reading from {PROJECT_ROOT}")
     print(f"auth: {'bearer token required' if TOKEN else 'OPEN (set SEVANYA_TOKEN to lock)'}")
     print(f"listening on :{PORT}")
+
+    # Started here rather than at import, so importing the module for a test
+    # doesn't spawn a thread that talks to the API.
+    if checkin.start(store):
+        print(f"check-in: after {checkin.interval_hours():g}h of quiet")
     # 0.0.0.0 so your phone can reach it over Tailscale. On a machine that is
     # NOT on a private network, this listens on every interface — set a token.
     uvicorn.run(app, host="0.0.0.0", port=PORT)

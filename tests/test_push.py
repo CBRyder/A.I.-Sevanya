@@ -84,6 +84,27 @@ def test_the_topic_is_never_revealed(configured):
     assert "a-long-unguessable-topic" not in detail
 
 
+def test_the_public_server_is_recognised_as_public(configured):
+    """Worth surfacing: on ntfy.sh the topic name is the only thing between
+    your notifications and anyone who guesses it, and the contents pass
+    through a machine you don't run."""
+    assert push.is_public()
+
+
+def test_a_self_hosted_server_is_not_public(configured, monkeypatch):
+    monkeypatch.setenv("SEVANYA_NTFY_SERVER", "http://nas:8080")
+    assert not push.is_public()
+
+
+def test_a_self_hosted_url_given_as_the_topic_is_not_public(monkeypatch):
+    monkeypatch.setenv("SEVANYA_NTFY_TOPIC", "http://100.64.0.3:8080/games")
+    assert not push.is_public()
+
+
+def test_nothing_configured_is_not_reported_as_public(unconfigured):
+    assert not push.is_public()
+
+
 # --- sending ---------------------------------------------------------------
 
 

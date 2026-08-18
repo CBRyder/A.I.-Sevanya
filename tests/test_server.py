@@ -383,3 +383,43 @@ def test_the_startup_check_installs_rather_than_only_reporting(tmp_path, monkeyp
     monkeypatch.setattr(deps, "ensure", ensure)
     build(tmp_path, monkeypatch, answer(blocks))
     assert seen["install"] is True
+
+
+# --- the automatic check-in ------------------------------------------------
+
+
+def test_the_synthetic_prompt_is_hidden_from_the_transcript(tmp_path, monkeypatch, blocks):
+    """It's an instruction to her, not something the user said.
+
+    Showing it would put words in their mouth in their own transcript — and
+    they'd be words about themselves in the third person.
+    """
+    from sevanya.store import CHECKIN_MARKER
+
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    conversation = server.store.new_conversation(title="check-in")
+    server.store.append_message(conversation, "user", f"{CHECKIN_MARKER} nudge her into writing")
+    server.store.append_message(conversation, "assistant",
+                                [blocks(type="text", text="Worth picking the parser back up.")])
+
+    transcript = client.get(f"/api/conversations/{conversation}").json()
+    assert [m["text"] for m in transcript] == ["Worth picking the parser back up."]
+
+
+def test_an_ordinary_message_is_still_shown(tmp_path, monkeypatch, blocks):
+    """The filter must not swallow anything the user actually typed."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    conversation = server.store.new_conversation()
+    server.store.append_message(conversation, "user", "[sevanya] is a good name, right?")
+    transcript = client.get(f"/api/conversations/{conversation}").json()
+    assert transcript[0]["text"] == "[sevanya] is a good name, right?"
+
+
+def test_the_checkin_thread_is_not_started_at_import(tmp_path, monkeypatch, blocks):
+    """Importing the module for a test must not spawn a thread that calls the API."""
+    import threading
+
+    before = {t.name for t in threading.enumerate()}
+    build(tmp_path, monkeypatch, answer(blocks))
+    after = {t.name for t in threading.enumerate()}
+    assert "sevanya-checkin" not in after - before

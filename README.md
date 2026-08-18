@@ -168,20 +168,34 @@ evidence.
 
 ## Reaching my phone
 
-She can push a notification to my phone through [ntfy](https://ntfy.sh).
+She can push a notification to my phone through [ntfy](https://ntfy.sh),
+**self-hosted**. What she'd be telling me about is what I'm building, and that
+shouldn't be passing through a machine I don't run.
 
 ```bash
-export SEVANYA_NTFY_TOPIC=some-long-unguessable-string
-export SEVANYA_NTFY_SERVER=https://ntfy.sh   # optional, or my own instance
-export SEVANYA_NTFY_TOKEN=tk_...             # optional, for a protected topic
+docker compose -f deploy/ntfy-compose.yml up -d
+docker exec -it sevanya-ntfy ntfy user add --role=admin sevanya
+docker exec -it sevanya-ntfy ntfy token add sevanya
 ```
 
-Then subscribe to the same topic in the ntfy app. **The topic name is the
-password** — anyone who knows it can read the notifications and publish to
-them. Make it long, don't send anything through it I'd mind a stranger reading,
-or point `SEVANYA_NTFY_SERVER` at my own instance, which is config and no code.
-The topic is never printed in a log line or an error; `push.where()` shows the
-server only.
+```bash
+export SEVANYA_NTFY_SERVER=http://<tailscale-name>:8080
+export SEVANYA_NTFY_TOPIC=some-long-unguessable-string
+export SEVANYA_NTFY_TOKEN=tk_...
+```
+
+Then point the ntfy app at the same server over Tailscale and subscribe. The
+compose file sets `auth-default-access: deny-all`, which is the part not to
+skip: without it anyone who reaches port 8080 can both read my notifications
+and send me fake ones.
+
+The public ntfy.sh still works if I leave `SEVANYA_NTFY_SERVER` unset, and
+she'll drop a notice at startup saying so — no accidental drift back onto
+someone else's server.
+
+**The topic name is the password** either way: anyone who knows it can read the
+notifications and publish to them. It's never printed in a log line or an
+error, and `push.where()` reports the server only.
 
 She pushes in three cases:
 
@@ -202,6 +216,36 @@ something is already going wrong, and a failed notification becoming the new
 exception turns "the reload failed" into "the reload crashed". Every attempt is
 recorded either way, because a push that silently didn't arrive is worse than
 one that never existed — I'd be sitting there assuming I'd have been told.
+
+## When I've been away
+
+If I haven't written anything for 24 hours, she writes me a short check-in —
+looks at what's open on her list and what I was last doing, picks the one thing
+most worth coming back to. It lands as its own `check-in` thread and as a
+notification.
+
+She keeps nudging every 24 hours until I actually reply. Away for a week, come
+back to seven — deliberate, since the alternative is one message on day two
+that I never see.
+
+```bash
+SEVANYA_CHECKIN=0          # turn it off
+SEVANYA_CHECKIN_HOURS=48   # or make it less eager
+```
+
+A conversation has to open with a user turn — the API rejects one starting with
+the assistant — so the thread begins with a synthetic prompt marked
+`[sevanya:auto]`, which the transcript endpoint hides. She sees it, because it's
+the instruction; I don't, because it isn't something I said.
+
+Two things that took care and are worth not undoing:
+
+- Her own check-in is stored with role `user`, so it must not count as *me*
+  talking. If it did she'd nudge once, see her own message, conclude I'd come
+  back, and go quiet forever.
+- The `checkin` notice is recorded before the push and regardless of whether it
+  worked. It's what tells her she's already nudged, so a phone that's turned
+  off would otherwise mean a check-in every ten minutes.
 
 ## Notices
 
@@ -288,6 +332,7 @@ sevanya/
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
   push.py     sending a notification to the phone
+  checkin.py  the nudge after a day of quiet
   lifecycle.py  restarting the process, shared by the endpoint and the tool
   __main__.py   `python -m sevanya` — requirements first, then the server
   store.py    SQLite: conversations, messages, journal, task list
