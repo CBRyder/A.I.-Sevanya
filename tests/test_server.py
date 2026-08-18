@@ -1,0 +1,202 @@
+"""The HTTP surface the phone talks to.
+
+server.py builds its Store at import time, so every test here imports it fresh
+with the class swapped for one pointed at a tmp database. That's a little
+awkward — it's the cost of a module-level `store = Store()` — but it's better
+than a test run that writes into the real journal.
+"""
+
+import sys
+
+import pytest
+
+pytest.importorskip("fastapi", reason="fastapi not installed")
+pytest.importorskip("httpx", reason="fastapi's TestClient needs httpx")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+import anthropic  # noqa: E402
+import sevanya.store as store_mod  # noqa: E402
+
+
+def build(tmp_path, monkeypatch, turns, token=None):
+    """A TestClient over a fresh server module, a tmp DB and a stubbed model."""
+    from tests.conftest import FakeClient
+
+    real_store = store_mod.Store
+
+    class TmpStore(real_store):
+        def __init__(self, path=None):
+            super().__init__(path if path is not None else tmp_path / "server.db")
+
+    monkeypatch.setattr(store_mod, "Store", TmpStore)
+
+    # A class, not a lambda: agent.py annotates its client parameter as
+    # `anthropic.Anthropic | None`, and that union is evaluated when the
+    # module is imported. A function object has no `|`, so a lambda here
+    # fails the import rather than the test.
+    class StubAnthropic(FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(list(turns))
+
+    monkeypatch.setattr(anthropic, "Anthropic", StubAnthropic)
+
+    if token is None:
+        monkeypatch.delenv("SEVANYA_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("SEVANYA_TOKEN", token)
+
+    sys.modules.pop("sevanya.server", None)
+    import sevanya.server as server
+
+    return TestClient(server.app), server
+
+
+@pytest.fixture
+def blocks():
+    from tests.conftest import _Block
+    return _Block
+
+
+def answer(blocks, text="the answer"):
+    return [([blocks(type="text", text=text)], "end_turn")]
+
+
+# --- /api/chat -------------------------------------------------------------
+
+
+def test_chat_streams_and_reports_its_conversation_id(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    response = client.post("/api/chat", json={"message": "hello"})
+    assert response.status_code == 200
+
+    events = [line for line in response.text.splitlines() if line.startswith("data:")]
+    kinds = [line for line in events]
+    assert any('"conversation"' in line for line in kinds), "client never learns the id"
+    assert any('"the answer"' in line for line in kinds)
+    assert any('"done"' in line for line in kinds)
+
+
+def test_chat_without_an_id_starts_a_new_thread_not_the_latest(tmp_path, monkeypatch, blocks):
+    """Deliberately not "resume latest".
+
+    Siri creates its own conversations. If a bare /api/chat grabbed the newest
+    thread, opening the web UI would drop you into whatever you last asked out
+    loud.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks) * 3)
+    first = client.post("/api/chat", json={"message": "one"})
+    second = client.post("/api/chat", json={"message": "two"})
+    assert _conversation_id(first) != _conversation_id(second)
+
+
+def test_chat_titles_the_thread_it_creates(tmp_path, monkeypatch, blocks):
+    """Otherwise the thread picker is a list of "(untitled)"."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    client.post("/api/chat", json={"message": "why is my parser segfaulting?"})
+    listed = client.get("/api/conversations").json()
+    assert listed[0]["title"].startswith("why is my parser")
+
+
+def test_chat_reports_errors_as_events_rather_than_dying(tmp_path, monkeypatch, blocks):
+    """A failure mid-stream has to reach the browser as text.
+
+    The response has already started, so there's no status code left to
+    change — an exception here is a silent truncation on the phone.
+    """
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+
+    import sevanya.server as server
+
+    def boom(self, text):
+        raise RuntimeError("model exploded")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(server.Agent, "stream", boom)
+    response = client.post("/api/chat", json={"message": "hi"})
+    assert response.status_code == 200
+    assert '"error"' in response.text
+    assert "model exploded" in response.text
+
+
+def _conversation_id(response):
+    import json
+    for line in response.text.splitlines():
+        if line.startswith("data:"):
+            event = json.loads(line[5:])
+            if event.get("type") == "conversation":
+                return event["id"]
+    raise AssertionError("no conversation event in the stream")
+
+
+# --- /api/ask (Siri) -------------------------------------------------------
+
+
+def test_ask_blocks_and_returns_one_blob(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks, "spoken answer"))
+    body = client.post("/api/ask", json={"message": "what is a decorator?"}).json()
+    assert body["reply"] == "spoken answer"
+    assert "conversation_id" in body
+
+
+def test_every_siri_request_starts_a_fresh_thread(tmp_path, monkeypatch, blocks):
+    """Continuity comes from recall, not from dragging a transcript along."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks) * 2)
+    first = client.post("/api/ask", json={"message": "one"}).json()
+    second = client.post("/api/ask", json={"message": "two"}).json()
+    assert first["conversation_id"] != second["conversation_id"]
+
+
+# --- transcripts -----------------------------------------------------------
+
+
+def test_transcript_strips_tool_plumbing(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    conversation = server.store.new_conversation()
+    server.store.append_message(conversation, "user", "question")
+    server.store.append_message(conversation, "assistant", [
+        blocks(type="text", text="answer"),
+        blocks(type="tool_use", id="t1", name="grep", input={}),
+    ])
+    transcript = client.get(f"/api/conversations/{conversation}").json()
+    assert [m["text"] for m in transcript] == ["question", "answer"]
+
+
+def test_missing_conversation_is_a_404_not_an_empty_list(tmp_path, monkeypatch, blocks):
+    """A phone holding a stale id has to tell "empty" from "gone"."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    assert client.get("/api/conversations/4242").status_code == 404
+
+
+# --- auth ------------------------------------------------------------------
+
+
+def test_endpoints_are_open_when_no_token_is_set(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token=None)
+    assert client.get("/api/conversations").status_code == 200
+
+
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "secret"}])
+def test_a_set_token_is_actually_required(tmp_path, monkeypatch, blocks, headers):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    assert client.post("/api/chat", json={"message": "hi"}, headers=headers).status_code == 401
+    assert client.post("/api/ask", json={"message": "hi"}, headers=headers).status_code == 401
+    assert client.get("/api/conversations", headers=headers).status_code == 401
+
+
+def test_the_right_token_gets_in(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    headers = {"Authorization": "Bearer secret"}
+    assert client.get("/api/conversations", headers=headers).status_code == 200
+
+
+# --- static ----------------------------------------------------------------
+
+
+def test_the_page_and_its_icons_are_served(tmp_path, monkeypatch, blocks):
+    """The manifest points at these paths; a 404 here is a blank home screen icon."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    assert client.get("/").status_code == 200
+    manifest = client.get("/manifest.json").json()
+    for icon in manifest["icons"]:
+        assert client.get(icon["src"]).status_code == 200, f"{icon['src']} is missing"

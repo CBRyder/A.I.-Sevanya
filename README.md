@@ -39,6 +39,32 @@ python -m sevanya.main --list   # what have I got
 python -m sevanya.main --id 7   # jump to one
 ```
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Offline and free: no API key, no network, and every `Store` is built on a
+temp file, so a test run can't touch `~/.sevanya/sevanya.db`.
+
+The suite is shaped by the bugs that actually happened, not by coverage. Two
+of them cost a day each and both were one assert away from being caught:
+
+- A tool schema with `input_Schema` instead of `input_schema`. The whole tools
+  array is validated on **every** request, so one typo meant Sevanya couldn't
+  answer "hello" — it looked like a grep bug and wasn't.
+- A button whose handler named an id that wasn't in the markup. That throws at
+  the top level of the script, which aborts the rest of it: send, restore, the
+  thread picker, all dead, with no error visible on a phone.
+
+`tests/test_web.py` checks the front end without a browser — every id the
+script reaches for exists in the markup, no button is wired with bare
+`getElementById().onclick=`, both script blocks parse under `node --check`
+(skipped if node isn't installed), and the icons the manifest promises are on
+disk.
+
 ## Server (for the phone)
 
 ```powershell
