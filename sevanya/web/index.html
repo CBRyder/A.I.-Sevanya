@@ -82,6 +82,7 @@
 <header>
   <b>Sevanya</b>
   <button id="new">New</button>
+  <button id="refresh" title="Reload this thread from the server">↻</button>
   <button id="threads-btn">Threads</button>
   <small id="status">ready</small>
 </header>
@@ -117,6 +118,40 @@
     <div class="row"><button id="threads-close">Close</button></div>
   </div>
 </div>
+
+<script>
+// Installed first, and deliberately in its own block. Anything that throws at
+// the top level of the next script aborts the whole of it — every handler
+// after the failure never binds, so the page paints and then does nothing.
+// That's invisible on a phone, where there is no console to look at. Put it
+// on screen instead.
+//
+// A syntax error is thrown while a script is being *compiled*, so a handler
+// inside that same script would never have registered to catch it. Hence the
+// separate block, and hence writing to the DOM directly here rather than
+// calling anything defined later.
+(function () {
+  function show(text) {
+    var log = document.getElementById('log');
+    if (!log) return;
+    var el = document.createElement('div');
+    el.className = 'msg err';
+    el.textContent = text;
+    log.appendChild(el);
+    var status = document.getElementById('status');
+    if (status) status.textContent = 'script error';
+  }
+  window.addEventListener('error', function (e) {
+    // Inline scripts report the page URL as the filename, whose last path
+    // segment is empty — so fall back to 'page' rather than printing '[:229]'.
+    var where = (e.filename || '').split('/').pop() || 'page';
+    show('[' + where + ':' + (e.lineno || '?') + '] ' + (e.message || 'error'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    show('unhandled: ' + ((e.reason && e.reason.message) || e.reason));
+  });
+})();
+</script>
 
 <script>
 const log = document.getElementById('log');
@@ -157,7 +192,7 @@ function askToken(then) {
   tokenInput.focus();
 }
 
-document.getElementById('gate-save').onclick = () => {
+bind('gate-save', () => {
   const value = tokenInput.value.trim();
   if (!value) return;
   token = value;
@@ -165,15 +200,32 @@ document.getElementById('gate-save').onclick = () => {
   gate.removeAttribute('data-open');
   const then = onToken; onToken = null;
   if (then) then();
-};
-document.getElementById('gate-cancel').onclick = () => {
+});
+bind('gate-cancel', () => {
   gate.removeAttribute('data-open');
   onToken = null;
   status.textContent = 'no token';
-};
+});
 tokenInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gate-save').click(); }
 });
+
+// Wire a handler by id. Doing this directly —
+//   document.getElementById('refresh').onclick = ...
+// — throws "Cannot set properties of null" if the markup and the script
+// disagree about the id, and because that throw is at top level it kills
+// every line after it too: send stops working, the transcript stops loading,
+// the whole page goes inert for one wrong string. This reports the mismatch
+// and carries on binding everything else.
+function bind(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.error('no element #' + id);
+    add('err', 'missing button #' + id + ' — markup and script disagree');
+    return;
+  }
+  el.onclick = handler;
+}
 
 function add(cls, text) {
   const el = document.createElement('div');
@@ -194,13 +246,24 @@ input.addEventListener('input', () => {
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
-document.getElementById('send').onclick = send;
-document.getElementById('new').onclick = () => {
+bind('send', send);
+bind('new', () => {
   conversationId = null;
   localStorage.removeItem('conversationId');
   log.innerHTML = '';
   status.textContent = 'new conversation';
-};
+});
+
+// Refresh: pull this thread again from the server. Worth having because the
+// transcript can change without this device doing anything — ask Siri
+// something while the page is open and it lands in the database, not in this
+// log. Refresh is how you see it.
+bind('refresh', async () => {
+  if (busy) return;
+  if (!conversationId) { status.textContent = 'nothing to refresh'; return; }
+  status.textContent = 'refreshing…';
+  await restore();
+});
 
 // Reload whatever thread this device was last in.
 async function restore() {
@@ -231,11 +294,11 @@ restore();
 const threads = document.getElementById('threads');
 const threadList = document.getElementById('thread-list');
 
-document.getElementById('threads-close').onclick = () => threads.removeAttribute('data-open');
+bind('threads-close', () => threads.removeAttribute('data-open'));
 threads.onclick = e => { if (e.target === threads) threads.removeAttribute('data-open'); };
 gate.onclick = e => { if (e.target === gate) document.getElementById('gate-cancel').click(); };
 
-document.getElementById('threads-btn').onclick = async () => {
+bind('threads-btn', async () => {
   threadList.textContent = 'loading…';
   threads.setAttribute('data-open', '');
   try {
@@ -271,7 +334,7 @@ document.getElementById('threads-btn').onclick = async () => {
   } catch (err) {
     threadList.textContent = String(err);
   }
-};
+});
 
 async function send() {
   const message = input.value.trim();

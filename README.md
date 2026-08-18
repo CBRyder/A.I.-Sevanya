@@ -99,6 +99,19 @@ sevanya/
 - `Store` opens **one connection per thread** — the web server runs requests in
   a threadpool and SQLite connections can't cross threads. Don't "simplify" it
   back to a single shared connection.
+- **↻** re-pulls the current thread from the server. Worth having because the
+  transcript changes without this device doing anything — ask Siri something
+  with the page open and it lands in the database, not in the log. Note that
+  tool lines don't come back: `/api/conversations/{id}` returns text only.
+- Wire buttons with `bind(id, fn)`, not `getElementById(id).onclick`. If the
+  id doesn't match the markup, the direct form throws at the top level of the
+  script, which aborts **the rest of the script** — send stops working, the
+  transcript stops loading, the whole page goes inert over one wrong string.
+  `bind` reports the mismatch on screen and keeps binding everything else.
+- The first `<script>` block puts JS errors *in the page*. There's no console
+  on an iPhone, so a silent script death is otherwise undebuggable from the
+  device. It's a separate block because a syntax error is thrown while its own
+  script is compiling — a handler inside that script would never have run.
 - The **Threads** button lists `/api/conversations`, Siri's included, so the
   phone can rejoin yesterday's thread. A thread the server doesn't have any
   more (`404`) clears itself from localStorage rather than leaving you typing
