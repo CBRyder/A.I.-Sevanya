@@ -71,9 +71,14 @@ python -m sevanya.check
 ```
 
 It reports what the server has loaded, how much context she needs before you've
-typed anything, and then the only question that matters — given a tool and a
-question that requires it, does the model call the tool or just talk about it?
-Exit 0 means yes.
+typed anything, and then the only question that matters: given **all thirteen
+of her tools** and a question that requires a particular one, does it pick the
+right one — and does it keep doing so? It asks each question three times by
+default (`--runs N`), because with a small model the question isn't whether it
+can but how often. One lucky call tells you nothing about the twentieth.
+
+Exit 0 means good enough, 1 means it calls the wrong tool too often or none at
+all, 2 means nothing answered.
 
 Worth knowing before you rely on it: **everything she does well depends on tool
 calls.** Reading your code, grepping it, recalling past sessions, keeping her
