@@ -64,11 +64,20 @@ store = Store()
 # never imports this module, so there it correctly reports nothing to do.
 lifecycle.mark_server_running()
 
-# Check the requirements on the way up and record the answer. Doing it here
-# rather than only in `reload` means a restart that lands in a broken
-# environment leaves a note saying so — otherwise the only evidence is a
-# traceback in a terminal nobody is looking at.
-_deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=False)
+# Check the requirements on the way up and record the answer, so a start that
+# lands in a broken environment leaves a note saying so — otherwise the only
+# evidence is a traceback in a terminal nobody is looking at.
+#
+# This is the backstop. `python -m sevanya` has already done it before
+# importing anything, which is the only place a genuinely missing dependency
+# can be fixed; this catches the case where someone started the server module
+# directly, and anything that went missing since.
+# SEVANYA_SKIP_DEPS means skip the check, not "check but don't fix" — a flag
+# that half-applies is worse than no flag.
+if os.environ.get("SEVANYA_SKIP_DEPS"):
+    _deps_ok, _deps_report = True, "requirements not checked (SEVANYA_SKIP_DEPS)"
+else:
+    _deps_ok, _deps_report = deps.ensure(PROJECT_ROOT, install_missing=True)
 store.notify("startup", f"server started — {_deps_report}")
 store.trim_notifications()
 

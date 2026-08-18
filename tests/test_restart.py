@@ -33,7 +33,7 @@ def free_port() -> int:
 
 @pytest.fixture
 def server(tmp_path):
-    """A real `python -m sevanya.server`, on its own port and its own database."""
+    """A real `python -m sevanya`, on its own port and its own database."""
     port = free_port()
     env = {
         **os.environ,
@@ -42,7 +42,7 @@ def server(tmp_path):
         "PYTHONPATH": str(ROOT),
     }
     proc = subprocess.Popen(
-        [sys.executable, "-m", "sevanya.server"],
+        [sys.executable, "-m", "sevanya"],
         cwd=str(tmp_path), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

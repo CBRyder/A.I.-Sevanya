@@ -10,11 +10,17 @@ import sys
 import threading
 import time
 
-# How to start a fresh copy. Always the module entry point, whatever was typed
-# originally: `python server.py` can't work, because the relative imports need
-# the package context that -m provides. cwd and the environment come along with
-# exec, so PROJECT_ROOT and SEVANYA_TOKEN are the same on the other side.
-RELAUNCH = [sys.executable, "-m", "sevanya.server"]
+# How to start a fresh copy. `python -m sevanya` rather than
+# `-m sevanya.server`, so a restart goes through the bootstrap and picks up a
+# changed requirements.txt before importing anything that needs it — which is
+# the case where restarting straight into the server would fail on import with
+# nothing left listening to say why.
+#
+# Always a module entry point, whatever was typed originally: `python
+# server.py` can't work, because the relative imports need the package context
+# that -m provides. cwd and the environment come along with exec, so
+# PROJECT_ROOT and SEVANYA_TOKEN are the same on the other side.
+RELAUNCH = [sys.executable, "-m", "sevanya"]
 
 # Set by server.py at import. The terminal REPL never sets it, so `reload` can
 # say "there's no server to restart" instead of exec'ing one into existence

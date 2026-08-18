@@ -266,7 +266,9 @@ def test_the_relaunch_uses_the_module_entry_point(tmp_path, monkeypatch, blocks)
     """`python server.py` cannot work — the relative imports need -m."""
     from sevanya import lifecycle
 
-    assert lifecycle.RELAUNCH[1:] == ["-m", "sevanya.server"]
+    # -m sevanya, not -m sevanya.server: a restart goes through the bootstrap
+    # so a changed requirements.txt is installed before anything imports it.
+    assert lifecycle.RELAUNCH[1:] == ["-m", "sevanya"]
 
 
 def test_importing_the_server_marks_it_restartable(tmp_path, monkeypatch, blocks):
@@ -351,7 +353,33 @@ def test_starting_up_records_the_dependency_check(tmp_path, monkeypatch, blocks)
 
     Otherwise the only trace is a traceback in a terminal nobody is watching,
     which is precisely the situation when you're holding a phone.
+
+    The notice has to carry what the check actually said — asserting only that
+    some startup notice exists would pass with the check removed entirely.
     """
+    from sevanya import deps
+
+    monkeypatch.setattr(deps, "ensure",
+                        lambda root, install_missing=True: (True, "checked-3-requirements"))
     client, _ = build(tmp_path, monkeypatch, answer(blocks))
+
     rows = client.get("/api/notifications").json()
-    assert any(r["kind"] == "startup" for r in rows)
+    startup = [r for r in rows if r["kind"] == "startup"]
+    assert startup, "nothing recorded at startup"
+    assert "checked-3-requirements" in startup[0]["message"]
+
+
+def test_the_startup_check_installs_rather_than_only_reporting(tmp_path, monkeypatch, blocks):
+    """Asked for explicitly: cover the requirements on start, don't just moan."""
+    from sevanya import deps
+
+    seen = {}
+
+    def ensure(root, install_missing=True):
+        seen["install"] = install_missing
+        return True, "fine"
+
+    monkeypatch.delenv("SEVANYA_SKIP_DEPS", raising=False)
+    monkeypatch.setattr(deps, "ensure", ensure)
+    build(tmp_path, monkeypatch, answer(blocks))
+    assert seen["install"] is True

@@ -32,7 +32,19 @@ pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...   # Windows: set ANTHROPIC_API_KEY=...
 ```
 
-Run it from the directory you want it to be able to read:
+Run it from the directory you want it to be able to read. The server entry
+point checks `requirements.txt` and installs anything missing **before** it
+imports anything that needs it, so a fresh clone or a new line in the file just
+works:
+
+```bash
+python -m sevanya              # the server: checks requirements, then serves
+```
+
+Set `SEVANYA_SKIP_DEPS=1` to start without checking, for working offline or
+managing the environment yourself. `SEVANYA_PORT` moves it off 8765.
+
+The terminal REPL:
 
 ```bash
 python -m sevanya.main          # resume where I left off
@@ -71,7 +83,7 @@ disk.
 
 ```powershell
 $env:SEVANYA_TOKEN = "some-long-random-string"   # optional but do it
-python -m sevanya.server
+python -m sevanya
 ```
 
 Then `http://localhost:8765` in a browser, or `http://<tailscale-name>:8765`
@@ -127,6 +139,13 @@ tool checks `requirements.txt`, installs anything missing, restarts the server,
 and my browser notices and reloads itself — so front-end changes show up too,
 not just Python ones.
 
+`python -m sevanya` runs the same check on the way up, and this is why it's a
+separate entry point rather than a few lines in `server.py`: `server.py`
+imports fastapi at the top, so if fastapi is missing the process is already
+dead before any of our code runs, and a check there could only ever confirm
+what already worked. The bootstrap touches nothing outside the standard library
+until the requirements are known good.
+
 The dependency check asks two questions, and the second is the one that bites:
 
 - is it installed, at a version the requirement allows?
@@ -141,8 +160,11 @@ If the check fails, **she doesn't restart**. The process would come back only
 far enough to crash on import, and then there's nothing listening to explain
 why. She reports what's wrong and stays up instead.
 
-The server also runs the check on the way up (report-only, no installing) and
-records the answer, so a restart into a broken environment leaves evidence.
+A restart goes back through the bootstrap, so a reload picks up a changed
+`requirements.txt` before importing anything that needs it. `server.py` keeps
+its own check as a backstop for anyone starting the module directly, and
+records the answer either way, so a start into a broken environment leaves
+evidence.
 
 ## Notices
 
@@ -229,6 +251,7 @@ sevanya/
   net.py      the two things that leave the machine, and what they refuse
   deps.py     are the requirements installed — and do they import
   lifecycle.py  restarting the process, shared by the endpoint and the tool
+  __main__.py   `python -m sevanya` — requirements first, then the server
   store.py    SQLite: conversations, messages, journal, task list
   prompt.py   the teaching contract
   main.py     terminal REPL

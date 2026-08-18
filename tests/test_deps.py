@@ -240,3 +240,74 @@ def test_reload_can_be_asked_to_only_report(call, monkeypatch):
     monkeypatch.setattr(tools.deps, "ensure", ensure)
     call(install=False)
     assert seen["install"] is False
+
+
+# --- the bootstrap ---------------------------------------------------------
+
+
+def test_the_bootstrap_imports_nothing_heavy_before_checking():
+    """The whole reason __main__.py exists.
+
+    server.py imports fastapi at module level, so if fastapi is missing the
+    process is already dead before any of our code runs — a check there can
+    only ever confirm what already worked. This file must reach the dependency
+    check using nothing but the standard library, which means the server
+    import has to be inside the function.
+    """
+    source = (Path(__file__).resolve().parents[1] / "sevanya" / "__main__.py").read_text()
+    top = source.split("def main")[0]
+    for heavy in ("import anthropic", "import fastapi", "import uvicorn",
+                  "from .server", "from .agent", "from .store"):
+        assert heavy not in top, f"{heavy} happens before the requirements are checked"
+    assert "from .server import main" in source.split("def main")[1], (
+        "the server should be imported inside main(), after the check"
+    )
+
+
+def test_the_bootstrap_refuses_to_start_on_a_broken_environment(monkeypatch, capsys):
+    """Starting anyway just fails on import with a worse message."""
+    from sevanya import __main__ as bootstrap
+
+    monkeypatch.delenv("SEVANYA_SKIP_DEPS", raising=False)
+    monkeypatch.setattr(bootstrap.deps, "ensure",
+                        lambda root, install_missing=True: (False, "fastapi: not installed"))
+
+    # Stub the server too. Without this, a regression here doesn't fail the
+    # test — main() falls through and starts a real uvicorn, and the suite
+    # hangs forever instead of reporting anything.
+    served = []
+    monkeypatch.setattr("sevanya.server.main", lambda: served.append(True))
+
+    assert bootstrap.main() == 1
+    assert not served, "it went on to start the server anyway"
+    assert "fastapi: not installed" in capsys.readouterr().out
+
+
+def test_the_bootstrap_installs_by_default(monkeypatch):
+    from sevanya import __main__ as bootstrap
+
+    seen = {}
+    monkeypatch.delenv("SEVANYA_SKIP_DEPS", raising=False)
+
+    def ensure(root, install_missing=True):
+        seen["install"] = install_missing
+        return False, "stop here"     # stop before it tries to serve
+
+    monkeypatch.setattr(bootstrap.deps, "ensure", ensure)
+    bootstrap.main()
+    assert seen["install"] is True, "startup should install, not just report"
+
+
+def test_the_check_can_be_skipped(monkeypatch, capsys):
+    """For working offline, or managing the environment yourself."""
+    from sevanya import __main__ as bootstrap
+
+    called = []
+    monkeypatch.setenv("SEVANYA_SKIP_DEPS", "1")
+    monkeypatch.setattr(bootstrap.deps, "ensure",
+                        lambda *a, **k: called.append(True) or (True, ""))
+    monkeypatch.setattr("sevanya.server.main", lambda: None)
+
+    bootstrap.main()
+    assert not called
+    assert "skipping" in capsys.readouterr().out
