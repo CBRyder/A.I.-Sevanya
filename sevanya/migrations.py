@@ -161,4 +161,13 @@ def initialise(conn: sqlite3.Connection, schema_sql: str) -> list[str]:
             "sees the table exists and never checks the columns.\n"
             "Back up and inspect it with:  python -m sevanya.db check"
         )
+
+    # A database built before versioning existed sits at 0 forever otherwise,
+    # and reports itself as out of date in every check while being perfectly
+    # current. Stamp it — but only here, after the drift check has confirmed
+    # its shape really does match, and only when nothing is waiting to run.
+    if version(conn) < LATEST and not pending(conn):
+        set_version(conn, LATEST)
+        conn.commit()
+
     return applied

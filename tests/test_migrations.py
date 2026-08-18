@@ -390,3 +390,44 @@ def test_migrate_says_when_there_is_nothing_to_do(tmp_path, capsys):
     seed(path)
     assert db_cli.main(["--path", str(path), "migrate"]) == 0
     assert "nothing to apply" in capsys.readouterr().out
+
+
+def test_an_old_database_that_already_matches_gets_stamped(raw):
+    """Yours, built before versioning existed.
+
+    Without this it sits at 0 for good and reports itself out of date in every
+    check, while being perfectly current — a false alarm that trains you to
+    ignore the real one.
+    """
+    raw.executescript(SCHEMA)
+    raw.commit()
+    assert migrations.version(raw) == 0
+
+    migrations.initialise(raw, SCHEMA)
+    assert migrations.version(raw) == migrations.LATEST
+
+
+def test_stamping_only_happens_once_the_shape_is_confirmed(raw):
+    """A drifted database must not be quietly marked current.
+
+    Stamping it would say 'up to date' about a file the code can't use.
+    """
+    raw.executescript(SCHEMA)
+    raw.execute("ALTER TABLE journal RENAME COLUMN note TO note_old")
+    raw.commit()
+
+    with pytest.raises(migrations.SchemaMismatch):
+        migrations.initialise(raw, SCHEMA)
+    assert migrations.version(raw) == 0, "it stamped a database it had just rejected"
+
+
+def test_a_database_with_work_waiting_is_not_stamped_ahead(raw, monkeypatch):
+    """Otherwise the pending migration is skipped forever."""
+    def never_runs(conn):
+        raise AssertionError("should not have been reached")
+
+    raw.executescript(SCHEMA); raw.commit()
+    monkeypatch.setattr(migrations, "LATEST", 5)
+    monkeypatch.setattr(migrations, "MIGRATIONS", [(5, "future", never_runs)])
+    # pending() is non-empty, so the stamp must not fire behind its back
+    assert migrations.pending(raw)
