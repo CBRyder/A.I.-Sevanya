@@ -508,16 +508,16 @@
 }
 
     
-    function updateMessageColor(who, color) {
+    function updateMessageColor(who, type, color) {
       document.documentElement.style.setProperty(`--${who}${type}Color`, color)
       localStorage.setItem(`${who}${type}Color`, color);
     }
     
     (function restoreMessageColors() {
-      const you = localStorage.getItem('yourChatColor');
-      const ai = localStorage.getItem('aiChatColor');
-      const you = localStorage.getItem('yourTextColor');
-      const ai = localStorage.getItem('aiTextColor');
+      const youBG = localStorage.getItem('yourChatColor');
+      const aiBG = localStorage.getItem('aiChatColor');
+      const youTxt = localStorage.getItem('yourTextColor');
+      const aiTxt = localStorage.getItem('aiTextColor');
       if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-BG-color').value = you; }
       if (ai) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-BG-color').value = ai; }
       if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-text-color').value = you; }
