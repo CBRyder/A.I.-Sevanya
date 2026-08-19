@@ -219,6 +219,75 @@ def reply_from_openai(message: dict, finish_reason: str | None) -> Reply:
     return Reply(blocks, stop)
 
 
+class _ThinkFilter:
+    """Pulls inline <think>...</think> reasoning out of a content stream.
+
+    Qwen3-on-Ollama puts reasoning in its own `reasoning_content` field,
+    untouched by this. DeepSeek-R1's distills, at least through LM Studio,
+    do it differently: reasoning arrives as literal <think>...</think>
+    markup inside `content` itself, mixed in with the real answer. Left
+    alone, that's the raw internal monologue landing in the transcript as
+    if she'd said it — the exact thing reasoning_content handling was
+    written to avoid, just arriving through a door that check doesn't cover.
+
+    Tags are not guaranteed to land whole in one chunk — token-level
+    streaming can split "<think>" across two or three deltas — so this
+    holds back a trailing suffix of the buffer only when that suffix is
+    itself a genuine prefix of the marker being watched for, never on
+    length alone. Ordinary text ending in, say, "...answer" doesn't
+    contain anything "<think>" could grow out of, so none of it waits on
+    a chunk that was never coming — only real partial tags do. Reasoning
+    text itself is discarded as it's recognised rather than buffered, so
+    a very long thinking block can't grow this without bound.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self):
+        self._buf = ""
+        self._in_thinking = False
+
+    @staticmethod
+    def _held_back(buf: str, marker: str) -> int:
+        """Longest suffix of buf that's a prefix of marker — 0 if none is."""
+        for k in range(min(len(buf), len(marker) - 1), 0, -1):
+            if buf.endswith(marker[:k]):
+                return k
+        return 0
+
+    def feed(self, piece: str) -> tuple[str, bool]:
+        """Returns (visible_text, thinking_just_started)."""
+        self._buf += piece
+        visible: list[str] = []
+        started = False
+        while True:
+            marker = self._CLOSE if self._in_thinking else self._OPEN
+            idx = self._buf.find(marker)
+            if idx == -1:
+                hold = self._held_back(self._buf, marker)
+                if not self._in_thinking:
+                    safe_len = len(self._buf) - hold
+                    if safe_len:
+                        visible.append(self._buf[:safe_len])
+                self._buf = self._buf[len(self._buf) - hold:] if hold else ""
+                break
+            if self._in_thinking:
+                self._in_thinking = False
+            else:
+                visible.append(self._buf[:idx])
+                self._in_thinking = True
+                started = True
+            self._buf = self._buf[idx + len(marker):]
+        return "".join(visible), started
+
+    def flush(self) -> str:
+        """Whatever's left at the end of the stream — never reasoning text."""
+        remainder = "" if self._in_thinking else self._buf
+        self._buf = ""
+        return remainder
+
+
 class LocalBackend:
     """Anything speaking OpenAI chat-completions: LM Studio, Ollama, vLLM."""
 
@@ -309,6 +378,7 @@ class LocalBackend:
         # nothing downstream wants that many events for something that isn't
         # the answer.
         announced_thinking = False
+        thinking = _ThinkFilter()
 
         try:
             response = client.send(request, stream=True)
@@ -336,14 +406,16 @@ class LocalBackend:
                 # working out before she says anything, and for a model like
                 # this one it's most of the tokens: surfacing it as text
                 # would put a wall of internal monologue in the transcript.
-                if delta.get("reasoning_content") and not announced_thinking:
+                piece = delta.get("content")
+                visible, think_started = thinking.feed(piece) if piece else ("", False)
+
+                if (delta.get("reasoning_content") or think_started) and not announced_thinking:
                     announced_thinking = True
                     yield ("thinking", "thinking…")
 
-                piece = delta.get("content")
-                if piece:
-                    text_parts.append(piece)
-                    yield piece
+                if visible:
+                    text_parts.append(visible)
+                    yield visible
 
                 # Tool calls arrive in fragments, indexed, with the arguments
                 # split across chunks. They have to be reassembled by index —
@@ -360,6 +432,17 @@ class LocalBackend:
                         slot["function"]["name"] = function["name"]
                     if function.get("arguments"):
                         slot["function"]["arguments"] += function["arguments"]
+
+            # A closing </think> or an opening <think> can be the very last
+            # thing that arrives, held back by feed() in case more of the
+            # marker was still coming. Nothing more is coming now — flush
+            # whatever safe text was waiting rather than lose the tail of
+            # the reply. If the stream ends mid-thinking, there's no visible
+            # text to recover; flush() already knows to discard that case.
+            tail = thinking.flush()
+            if tail:
+                text_parts.append(tail)
+                yield tail
         finally:
             if self._client is None:
                 client.close()
