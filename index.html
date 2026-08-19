@@ -509,15 +509,19 @@
 
     
     function updateMessageColor(who, color) {
-      document.documentElement.style.setProperty(`--${who}ChatColor`, color)
-      localStorage.setItem(`${who}ChatColor`, color);
+      document.documentElement.style.setProperty(`--${who}${type}Color`, color)
+      localStorage.setItem(`${who}${type}Color`, color);
     }
     
     (function restoreMessageColors() {
       const you = localStorage.getItem('yourChatColor');
       const ai = localStorage.getItem('aiChatColor');
-      if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-color').value = you; }
-      if (ai) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-color').value = ai; }
+      const you = localStorage.getItem('yourTextColor');
+      const ai = localStorage.getItem('aiTextColor');
+      if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-BG-color').value = you; }
+      if (ai) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-BG-color').value = ai; }
+      if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-text-color').value = you; }
+      if (ai) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-text-color').value = ai; }
     })();
     
     async function restartSession() {
