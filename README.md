@@ -52,9 +52,14 @@ machine — LM Studio, Ollama, anything speaking OpenAI chat-completions.
 ```bash
 SEVANYA_BACKEND=local
 SEVANYA_LOCAL_URL=http://localhost:1234/v1      # LM Studio; Ollama is :11434/v1
-SEVANYA_LOCAL_MODEL=whatever-you-loaded
+SEVANYA_LOCAL_MODEL=whatever-you-loaded          # optional — she'll ask if unset
 SEVANYA_LOCAL_KEY=...                            # only if your server wants one
 ```
+
+Leave `SEVANYA_LOCAL_MODEL` unset and she asks the server what it has loaded.
+Naming it by hand is a step you can't take until the model is loaded anyway,
+and getting it wrong is a 404 from Ollama and a silent surprise from anything
+that serves whatever it has regardless. Set it and your choice wins.
 
 The **Data** panel shows which one is answering.
 

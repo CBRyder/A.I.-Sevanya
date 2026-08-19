@@ -299,6 +299,82 @@ def test_an_unknown_backend_says_so(monkeypatch):
         backends.choose()
 
 
+def test_it_asks_the_server_which_model_is_loaded(monkeypatch):
+    """Naming the model by hand is a step you can't take until it's loaded.
+
+    Getting it wrong is a 404 from Ollama, and from a more forgiving server a
+    silent surprise where it serves something else entirely.
+    """
+    monkeypatch.delenv("SEVANYA_LOCAL_MODEL", raising=False)
+    seen = {}
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "qwen3.5-9b-instruct"}]})
+        seen["model"] = json.loads(request.content)["model"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    backend = backends.LocalBackend(
+        url="http://localhost:1234/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert backend.model == "qwen3.5-9b-instruct"
+    backend.send("system", [{"role": "user", "content": "hi"}], [])
+    assert seen["model"] == "qwen3.5-9b-instruct", "it discovered a name and then ignored it"
+
+
+def test_a_name_you_gave_it_wins(monkeypatch):
+    """Discovery is a convenience, not an override."""
+    monkeypatch.setenv("SEVANYA_LOCAL_MODEL", "the-one-i-chose")
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "something-else"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    backend = backends.LocalBackend(
+        url="http://localhost:1234/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert backend.model == "the-one-i-chose"
+
+
+def test_a_server_that_is_not_up_yet_does_not_break_anything(monkeypatch):
+    """describe() runs at server startup, possibly before LM Studio is running."""
+    monkeypatch.delenv("SEVANYA_LOCAL_MODEL", raising=False)
+
+    def dead(request):
+        raise httpx.ConnectError("nothing there")
+
+    backend = backends.LocalBackend(
+        url="http://localhost:1234/v1",
+        client=httpx.Client(transport=httpx.MockTransport(dead)))
+    assert backend.model == "local-model"
+    assert "local-model" in backend.describe()
+
+
+def test_a_failed_lookup_is_not_remembered(monkeypatch):
+    """You start her, then start LM Studio. She should catch up.
+
+    Caching "unknown" from before the server existed would mean restarting her
+    to fix something that fixed itself.
+    """
+    monkeypatch.delenv("SEVANYA_LOCAL_MODEL", raising=False)
+    state = {"up": False}
+
+    def handler(request):
+        if not state["up"]:
+            raise httpx.ConnectError("not yet")
+        return httpx.Response(200, json={"data": [{"id": "arrived-late"}]})
+
+    backend = backends.LocalBackend(
+        url="http://localhost:1234/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert backend.model == "local-model"
+    state["up"] = True
+    assert backend.model == "arrived-late", "it gave up permanently"
+
+
 def test_the_local_url_and_model_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("SEVANYA_BACKEND", "local")
     monkeypatch.setenv("SEVANYA_LOCAL_URL", "http://100.64.0.3:11434/v1/")
