@@ -52,6 +52,19 @@
       margin-bottom: 0.5rem;
     }
     
+    .msg-thinking {
+      color: var(--highlight);
+      font-size: 0.85rem;
+      font-style: italic;
+      margin-bottom: 0.5rem;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 1; }
+    }
+    
     .profile {
       padding: 0.75rem 1rem;
       border-bottom: 1px solid var(--fillC);
@@ -479,6 +492,8 @@
           conversationId = ev.id;
           localStorage.setItem('conversationId', ev.id);
         } else if (ev.type === 'text') {
+          const thinking = document.getElementById('thinking-indicator');
+          if (thinking) thinking.remove();
           if (!bubble) {
             bubble = document.createElement('div');
             bubble.className = 'msg-ai';
@@ -492,6 +507,12 @@
           note.className = 'msg-tool';
           note.textContent = '[' + ev.text + ']';
           chatLog.appendChild(note);
+        } else if (ev.type === 'thinking') {
+          const note = document.createElement('div');
+          note.className = 'msg-thinking';
+          note.id = 'thinking-indicator';
+          note.textContent = 'Sevanya is thinking...';
+          chatlog.appendChild(note);
         } else if (ev.type === 'error') {
           const err = document.createElement('div');
           err.className = 'msg-error';
