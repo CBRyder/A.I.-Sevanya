@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sevanya</title>
+  <link rel="icon" href="/static/icon.png">
+  <link rel="apple-touch-icon" href="/static/icon.png">
+  <style>
+    :root {
+      --backgroundC: #2e2e30;
+      --highlightC: #2a2a40;
+      --textC: #f0f0f0;
+      --fillC: #591DA3;
+      --yourChatColor: #9604c0;
+      --aiChatColor: #22c004;
+    }
+    
+    .msg-you {
+      background-color: var(--yourChatColor);
+      color: var(--textC);
+      padding: 0.5rem 0.75rem;
+      border-radius: 12px;
+      display: inline-block;
+      margin-bottom: 0.5rem;
+    }
+    
+    .msg-ai {
+      background-color: var(--aiChatColor);
+      color: var(--textC);
+      padding: 0.5rem 0.75rem;
+      border-radius: 12px;
+      display: inline-block;
+      margin-bottom: 0.5rem;
+    }
+    
+    .msg-tool {
+      color: var(--highlightC);
+      font-size: 0.85rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .msg-error {
+      color: #f7768e;
+      margin-bottom: 0.5rem;
+    }
+    
+    .profile {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--fillC);
+    }
+    
+    .profile-you, .profile-ai {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.25rem 0;
+    }
+    
+    .profile input[type="text"] {
+      background: var(--backgroundC);
+      color: var(--textC);
+      border: none;
+      border-bottom: 1px solid var(--fillC);
+      font: inherit;
+    }
+    .profile .status {
+      color: var(--highlightC);
+      font-size: 0.85rem;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      background: var(--backgroundC);    
+      color: var(--textC);
+    }
+
+    /* Chat Container */
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+    }
+    
+    .chat-log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+
+    /* Header */
+    .header {
+      background: var(--fillC);
+      padding: 1rem;
+      text-align: center;
+      font-size: 1.5rem;
+      font-weight: bold;
+    }
+
+    /* Main Menu */
+    .main-menu {
+      background: var(--backgroundC);
+      padding: 0.5rem;
+      display: flex;
+      justify-content: flex-end;
+      gap: 1rem;
+      border: var(--fillC);
+      border-radius: 2px;
+    }
+
+    .main-menu button {
+      background: var(--backgroundC);
+      border: none;
+      font-size: 1.75rem;
+      padding: 0.5rem 1rem;
+      color: VAR(--textC);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .main-menu button:hover {
+      background: var(--highlightC);
+    }
+
+    /* Chat Window */
+    .chat-window {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: flex-end;
+      gap: 0.5rem;
+      padding: 1rem;
+      border: 1px solid var(--fillC);
+    }
+
+    .chat-window textarea {
+      flex: 1;
+      padding: 0.5rem;
+      font-size: 1rem;
+      resize: none;
+      background: var(--backgroundC);
+      color: var(--textC);
+      border: none;
+      outline: none;
+    }
+
+    .chat-window button {
+      margin-top: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--backgroundC);
+      border: none;
+      color: var(--textC);
+      cursor: pointer;
+    }
+
+    .chat-window button:hover {
+      background: var(--backgroundC);
+    }
+
+    /* Panels (Task List, Journal, Settings) */
+    .panels {
+      position: fixed;
+      top: 0;
+      right: -300px;
+      width: 300px;
+      height: 100vh;
+      background: var(--backgroundC);
+      transition: right 0.3s ease;
+      z-index: 1000;
+      overflow-y: auto;
+    }
+    
+    .panel-description {
+      color: var(--textC);
+      font-size: 0.85rem;
+      margin: 0 0 0.5rem 0;
+    }
+
+    .panels.active {
+      right: 0 ; /*slide in*/
+    }
+
+    .panel {
+      background: var(--backgroundC);
+      padding: 1rem;
+      border: 1px solid var(--fillC);
+      border-radius: 5px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .panel-header h3 {
+      margin: 0;
+      font-size: 1.2rem;
+    }
+
+    .panel-header button {
+      background: none;
+      border: none;
+      color: var(--textC);
+      font-size: 1.2rem;
+    }
+
+    .panel-content {
+      display: none;
+      overflow-y: auto;
+      max-height: 200px;
+    }
+
+    .panel-content.active {
+      display: block;
+    }
+
+    .toggle-panels {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      z-index: 1001;
+    }
+    .panel-close {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: block;
+      width: 100%;
+      padding: 0.75rem 1rem;
+      background: var(--backgroundC);
+      color: var(--textC);
+      border: none;
+      text-align: left;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    /*Full-screen panel on mobile*/
+    @media (max-width: 600px) {
+      .panels {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--backgroundC);
+        z-index: 1000;
+      }
+      
+      .panels.active {
+      display: block;
+      }
+      
+      .main-menu {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      
+      .chat-window {
+        border-bottom-left-radius: 50px;
+        border-bottom-right-radius: 50px;
+      }
+
+      .panel-content {
+        max-height: 150px;
+      }
+      
+      .container {
+        z-index: 1;
+        border-bottom-left-radius: 50px;
+        border-bottom-right-radius: 50px;
+        overflow: hidden;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">Sevanya</div>
+
+    <!-- Main Menu -->
+    <div class="main-menu">
+      <button onclick="togglePanels()">☰</button>
+    </div>
+
+    <!--Chat Log-->
+    <div class="chat-log"></div>
+
+    <!-- Chat Window -->
+    <div class="chat-window">
+      <textarea id="chat-input" placeholder="Type your message here..."></textarea>
+      <button onclick="sendMessage()">&lt;Send&gt;</button><button onclick="insertNewLine()">↵</button>
+    </div>
+
+    <!-- Panels -->
+    <div class="panels">
+      <button class="panel-close" onclick="togglePanels()">‹ Back</button>
+      
+      <div class="profile">
+        <div class="profile-you">
+          <input type="text" id="your-name" value="You" oninput="updateProfileField('your-name', this.value)">
+          <input type="text" id="your-status" placeholder="Set a status…" oninput="updateProfileField('your-status', this.value)">
+        </div>
+        <div class="profile-ai">
+          <strong>Sevanya</strong>
+          <span class="status" id="ai-status">checking…</span>
+        </div>
+      </div>
+
+      
+      <!-- Task List Panel -->
+      <div class="panel">
+        <div class="panel-header" onclick="openPanel('task-list')">
+          <h3>Task List</h3>
+        
+        </div>
+        <div class="panel-content" id="task-list">
+          <p class="panel-description">What me and her Agree needs worked on</p>
+          <ul>
+            <li>Set up your first project (e.g., a simple 2D game in C++)</li>
+            <li>Learn basic OOP concepts in Python</li>
+            <li>Debug a Lua script from a game you've played</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Journal Panel -->
+      <div class="panel">
+        <div class="panel-header" onclick="openPanel('journal')">
+          <h3>Journal</h3>
+          
+        </div>
+        <div class="panel-content" id="journal">
+          <p class="panel-description">What she has noticed about how i learn and when to not pushback</p>
+          <p><strong>Day 1:</strong> Learned about pointers in C++ and fixed a memory leak in my game engine.</p>
+          <p><strong>Day 2:</strong> Struggled with Lua syntax but created a basic script to control a character's movement.</p>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div class="panel">
+        <div class="panel-header" onclick="openPanel('settings')">
+          <h3>Settings</h3>
+          
+        </div>
+        <div class="panel-content" id="settings">
+          <label>Your Messages: <input type="color" id="your-color" value="#591DA3" oninput="updateMessageColor('your', this.value)"></label><br>
+          <label>AI Messages: <input type="color" id="ai-color" value="#f0f0f0" oninput="updateMessageColor('ai', this.value)"></label><br>
+          <p>Toggle dark/light mode, adjust chat history, or set language preferences here.</p>
+        </div>
+      </div>
+      <!-- Server Settings Panel -->
+      <div class="panel">
+        <div class="panel-header" onclick="openPanel('serversettings')">
+          <h3>Server Settings</h3>
+          
+        </div>
+        <div class="panel-content" id="serversettings">
+          <p><button onclick="restartSession()">⏻ Restart server</button> Restart Server, using the PC</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Toggle Panels
+    function togglePanel(panelId) {
+      const panelContent = document.getElementById(panelId);
+      panelContent.classList.toggle("active");
+    }
+
+    function togglePanels() {
+      const panels = document.querySelector(".panels");
+      panels.classList.toggle("active");
+    }
+
+    // Show Panels
+    function openPanel(panelId) {
+      const panels = document.querySelectorAll(".panel-content");
+      panels.forEach(panel => {
+        panel.classList.remove("active");
+      });
+      const selectedPanel = document.getElementById(panelId);
+      selectedPanel.classList.add("active");
+      
+      document.querySelector(".panels").classList.add("active");
+    }
+    
+    function insertNewLine() {
+      const input = document.getElementById("chat-input");
+      input.value += "\n";
+      input.focus();
+    }
+    
+    function updateProfileField(key, value) {
+      localStorage.setItem(key, value);
+    }
+    
+    function restoreProfileFields() {
+      ['your-name', 'your-status'].forEach(key => {
+        const saved = localStorage.getItem(key);
+        if (saved) document.getElementById(key).value = saved;
+      });
+    }
+    restoreProfileFields();
+    
+    async function loadAIStatus() {
+      const statusEl = document.getElementById('ai-status');
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        const data = await res.json();
+        statusEl.textContent = data.backend;
+      } catch (e) {
+        statusEl.textContent = "offline";
+      }
+    }
+    loadAIStatus();
+
+
+    // Sends Message into the chat window
+    let conversationId = Number(localStorage.getItem('conversationId')) || null;
+
+    async function sendMessage() {
+      const input = document.getElementById("chat-input");
+      const message = input.value.trim();
+      if (!message) return;
+
+      const chatLog = document.querySelector(".chat-log");
+      chatLog.innerHTML += `<div class="msg-you"><strong>You:</strong> ${message}</div><br>`;
+      input.value = "";
+      input.style.height = "auto";
+
+    let bubble = null;
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, conversation_id: conversationId }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const ev = JSON.parse(line.slice(5));
+
+        if (ev.type === 'conversation') {
+          conversationId = ev.id;
+          localStorage.setItem('conversationId', ev.id);
+        } else if (ev.type === 'text') {
+          if (!bubble) {
+            bubble = document.createElement('div');
+            bubble.className = 'msg-ai';
+            bubble.innerHTML = '<strong>Sevanya:</strong> ';
+            chatLog.appendChild(bubble);
+          }
+          bubble.append(document.createTextNode(ev.text));
+        } else if (ev.type === 'tool') {
+          bubble = null;
+          const note = document.createElement('div');
+          note.className = 'msg-tool';
+          note.textContent = '[' + ev.text + ']';
+          chatLog.appendChild(note);
+        } else if (ev.type === 'error') {
+          const err = document.createElement('div');
+          err.className = 'msg-error';
+          err.textContent = ev.text;
+          chatLog.appendChild(err);
+        }
+      }
+    }
+  } catch (err) {
+    chatLog.innerHTML += `<div class="msg-error">${err}</div>`;
+  }
+
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+    
+    function updateMessageColor(who, color) {
+      document.documentElement.style.setProperty(`--${who}ChatColor`, color)
+      localStorage.setItem(`${who}ChatColor`, color);
+    }
+    
+    (function restoreMessageColors() {
+      const you = localStorage.getItem('yourChatColor');
+      const ai = localStorage.getItem('aiChatColor');
+      if (you) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-color').value = you; }
+      if (ai) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-color').value = ai; }
+    })();
+    
+    async function restartSession() {
+      if (!confirm("Restart the Server? in progress replies will be lost")) return;
+      
+      const before = await getStarted();
+      const res = await fetch('/api/restart', { method: 'POST' });
+      
+      if (res.status === 409) {
+        const body = await res.json();
+        alert('Could not Restart: ' + body.detail);
+        return;  
+      }
+      if (!res.ok) {
+        alert('Restart Failed: HTTP ' + res.status);
+        return;
+      }
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+        const now = await getStarted();
+        if (now && now > before) {
+          window.location.href = window.location.pathname + '?t=' + Date.now();;
+          return;
+        }
+      }
+      alert('Server did not come back within 20s. Check the machine the server runs on.')
+    }
+
+    async function getStarted() {
+      try {
+        const res = await fetch('/api/health', { cache : 'no-store'});
+        return res.ok ? (await res.json()).started : null;
+      } catch {
+        return null;
+      }
+    }
+    
+    document.getElementById("chat-input").addEventListener("input", function () {
+      this.style.height = "auto";
+      this.style.height = this.scrollHeight + "px";
+    });
+    
+    document.getElementById("chat-input").addEventListener("beforeinput", function (e) {
+      if (e.inputType === "insertLineBreak") {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    
+    //enter behavior, i.e. (enter = send and shift/ctrl + enter = new line)
+    document.getElementById("chat-input").addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.ctrlKey || e.shiftKey)) {
+        e.preventDefault(); //prevent default enter behavior
+        this.value += "\n"; //new line
+      }
+    });
+ 
+  </script>
+</body>
+</html>

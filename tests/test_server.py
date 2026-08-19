@@ -7,6 +7,7 @@ than a test run that writes into the real journal.
 """
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -182,6 +183,8 @@ def test_a_set_token_is_actually_required(tmp_path, monkeypatch, blocks, headers
     assert client.post("/api/chat", json={"message": "hi"}, headers=headers).status_code == 401
     assert client.post("/api/ask", json={"message": "hi"}, headers=headers).status_code == 401
     assert client.get("/api/conversations", headers=headers).status_code == 401
+    assert client.get("/api/modes", headers=headers).status_code == 401
+    assert client.post("/api/mode", json={"name": "direct"}, headers=headers).status_code == 401
 
 
 def test_the_right_token_gets_in(tmp_path, monkeypatch, blocks):
@@ -190,16 +193,90 @@ def test_the_right_token_gets_in(tmp_path, monkeypatch, blocks):
     assert client.get("/api/conversations", headers=headers).status_code == 200
 
 
-# --- static ----------------------------------------------------------------
+# --- modes -------------------------------------------------------------------
 
 
-def test_the_page_and_its_icons_are_served(tmp_path, monkeypatch, blocks):
-    """The manifest points at these paths; a 404 here is a blank home screen icon."""
+def test_modes_lists_every_mode_and_defaults_to_teach(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    body = client.get("/api/modes").json()
+    assert body["current"] == "teach"
+    names = {m["name"] for m in body["modes"]}
+    assert names == {"teach", "direct", "review", "quiz"}
+    # Every mode needs both, or a picker built from this has blank rows.
+    assert all(m["label"] and m["description"] for m in body["modes"])
+
+
+def test_setting_an_unknown_mode_400s_and_changes_nothing(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    res = client.post("/api/mode", json={"name": "sarcastic"})
+    assert res.status_code == 400
+    assert client.get("/api/modes").json()["current"] == "teach"
+
+
+def test_setting_a_known_mode_persists_and_shows_up_in_get(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    res = client.post("/api/mode", json={"name": "review"})
+    assert res.status_code == 200
+    assert res.json()["mode"] == "review"
+    assert client.get("/api/modes").json()["current"] == "review"
+
+
+def test_a_mode_change_is_logged_like_every_other_state_change(tmp_path, monkeypatch, blocks):
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    client.post("/api/mode", json={"name": "quiz"})
+    kinds = [n["kind"] for n in client.get("/api/notifications").json()]
+    assert "mode" in kinds
+
+
+def test_mode_changes_what_the_next_chat_actually_sends(tmp_path, monkeypatch, blocks):
+    """The contract server.py owes agent.py: system_extra carries the mode.
+
+    Not a round trip through the stub model — Agent._system() is already
+    covered elsewhere (see test_tasks.py). This checks the one new wire:
+    that a POST /api/mode changes what the *next* request builds, without
+    needing a restart.
+    """
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    assert server._mode_extra() == ""  # teach: the null case
+
+    client.post("/api/mode", json={"name": "direct"})
+    assert "Mode: direct" in server._mode_extra()
+
+
+def test_the_page_is_served(tmp_path, monkeypatch, blocks):
     client, _ = build(tmp_path, monkeypatch, answer(blocks))
     assert client.get("/").status_code == 200
+
+
+# The UI here is hand-built, separately from the server — on a fresh checkout
+# before manifest.json exists this has nothing to check, and skips rather than
+# failing on a file nobody has written yet. Once manifest.json is added it
+# starts running for real, with no change needed here.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.skipif(
+    not (_REPO_ROOT / "manifest.json").is_file(),
+    reason="manifest.json not written yet — this is the UI's to add",
+)
+def test_the_manifest_and_its_icons_are_served(tmp_path, monkeypatch, blocks):
+    """The manifest points at these paths; a 404 here is a blank home screen icon."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks))
     manifest = client.get("/manifest.json").json()
     for icon in manifest["icons"]:
         assert client.get(icon["src"]).status_code == 200, f"{icon['src']} is missing"
+
+
+def test_missing_index_is_a_404_not_a_crash(tmp_path, monkeypatch, blocks):
+    """Mid-rewrite the file can be absent for a moment — that's a 404, not a 500."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks))
+    real = server.WEB_DIR / "index.html"
+    moved = real.with_suffix(".html.bak")
+    real.rename(moved)
+    try:
+        assert client.get("/").status_code == 404
+    finally:
+        moved.rename(real)
 
 
 # --- health ----------------------------------------------------------------
@@ -255,10 +332,62 @@ def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch,
     client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
     called = []
     monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(server.lifecycle, "pull_latest", lambda *a, **k: (True, "up to date"))
 
     body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
     assert body["restarting"] is True
     assert body["pid"] == __import__("os").getpid()
+    assert called == [True]
+
+
+# --- restart: pulling first -------------------------------------------------
+
+
+def test_restart_pulls_before_scheduling_the_relaunch(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    pulled_dir = []
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server.lifecycle, "pull_latest",
+        lambda directory: (pulled_dir.append(directory), (True, "Fast-forward to abc123"))[1],
+    )
+
+    body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
+    assert pulled_dir == [server.WEB_DIR], "restart must pull the repo it actually serves from"
+    assert body["pulled"] == "Fast-forward to abc123"
+
+
+def test_a_failed_pull_refuses_to_restart(tmp_path, monkeypatch, blocks):
+    """An unrelated restart on stale code isn't what pressing this asked for."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    called = []
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(
+        server.lifecycle, "pull_latest",
+        lambda *a, **k: (False, "CONFLICT (content): Merge conflict in index.html"),
+    )
+
+    res = client.post("/api/restart", headers={"Authorization": "Bearer secret"})
+    assert res.status_code == 409
+    assert not called, "a refused pull must not restart on the old code anyway"
+
+    kinds = [n["kind"] for n in client.get("/api/notifications", headers={"Authorization": "Bearer secret"}).json()]
+    assert "restart-failed" in kinds
+
+
+def test_skip_pull_env_var_goes_straight_to_a_plain_restart(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    called = []
+    monkeypatch.setenv("SEVANYA_SKIP_PULL", "1")
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("pull_latest must not run when SEVANYA_SKIP_PULL is set")
+
+    monkeypatch.setattr(server.lifecycle, "pull_latest", fail_if_called)
+
+    res = client.post("/api/restart", headers={"Authorization": "Bearer secret"})
+    assert res.status_code == 200
     assert called == [True]
 
 
