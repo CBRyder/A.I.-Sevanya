@@ -228,9 +228,40 @@ class LocalBackend:
                  key: str | None = None, client: httpx.Client | None = None):
         self.url = (url or os.environ.get("SEVANYA_LOCAL_URL")
                     or "http://localhost:1234/v1").rstrip("/")
-        self.model = model or os.environ.get("SEVANYA_LOCAL_MODEL") or "local-model"
+        # None means "ask the server what it has". Naming the model by hand is
+        # a step you can't take until the thing is loaded, and getting it wrong
+        # is a 404 from Ollama and a silent surprise from anything that quietly
+        # serves whatever it has anyway.
+        self._model = model or os.environ.get("SEVANYA_LOCAL_MODEL") or None
         self.key = key if key is not None else os.environ.get("SEVANYA_LOCAL_KEY", "not-needed")
         self._client = client
+
+    @property
+    def model(self) -> str:
+        """The model to ask for — discovered once, if you didn't name one.
+
+        Only cached on success. A failed lookup usually means the server isn't
+        up yet, and remembering "unknown" from before you started it would be
+        the wrong thing to hold on to.
+        """
+        if self._model is None:
+            self._model = self.loaded_model()
+        return self._model or "local-model"
+
+    def loaded_model(self) -> str | None:
+        """Whatever the server says it has, or None if it can't be asked."""
+        try:
+            client = self._client or httpx.Client(timeout=5)
+            try:
+                response = client.get(f"{self.url}/models")
+                response.raise_for_status()
+                listed = [m.get("id") for m in response.json().get("data", []) if m.get("id")]
+            finally:
+                if self._client is None:
+                    client.close()
+        except Exception:
+            return None
+        return listed[0] if listed else None
 
     def describe(self) -> str:
         return f"local · {self.model} · {self.url}"
