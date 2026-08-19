@@ -25,7 +25,7 @@
     
     .msg-you {
       background-color: var(--yourChatColor);
-      color: var(--textC);
+      color: var(--yourTextColor);
       padding: 0.5rem 0.75rem;
       border-radius: 12px;
       display: inline-block;
@@ -34,7 +34,7 @@
     
     .msg-ai {
       background-color: var(--aiChatColor);
-      color: var(--textC);
+      color: var(--aiTextColor);
       padding: 0.5rem 0.75rem;
       border-radius: 12px;
       display: inline-block;
@@ -360,8 +360,10 @@
           
         </div>
         <div class="panel-content" id="settings">
-          <label>Your Messages: <input type="color" id="your-color" value="#591DA3" oninput="updateMessageColor('your', this.value)"></label><br>
-          <label>AI Messages: <input type="color" id="ai-color" value="#f0f0f0" oninput="updateMessageColor('ai', this.value)"></label><br>
+          <label>Your Message Background: <input type="color" id="your-BG-color" value="#591DA3" oninput="updateMessageColor('your', this.value)"></label><br>
+          <label>AI Message Background: <input type="color" id="ai-BG-color" value="#f0f0f0" oninput="updateMessageColor('ai', this.value)"></label><br>
+          <label>Your Message Text: <input type="color" id="your-text-color" value="#591DA3" oninput="updateMessageColor('your', this.value)"></label><br>
+          <label>AI Message Text: <input type="color" id="ai-text-color" value="#f0f0f0" oninput="updateMessageColor('ai', this.value)"></label><br>
           <p>Toggle dark/light mode, adjust chat history, or set language preferences here.</p>
         </div>
       </div>
