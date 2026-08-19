@@ -20,7 +20,8 @@ structural, not a promise in a prompt.
 | — | task list — she adds, completes and drops them ✅ |
 | 4 | Tailscale + iOS Shortcut → "Hey Siri, ask Sevanya…" |
 | 5 | Expo Go client, if the PWA isn't enough |
-| 6 | Local model via LM Studio, teaching modes |
+| 6 | Local model via LM Studio, teaching modes ✅ |
+| — | `index.html` rebuilt by hand, restart pulls it from GitHub first ✅ |
 
 ## Setup
 
@@ -129,6 +130,32 @@ Unset, each uses whatever the conversation uses. Set, they don't — so you can
 keep the good model for teaching and let a small local one fetch and summarise,
 which is the sort of thing a 9B is genuinely fine at.
 
+## Modes
+
+How she teaches, not what she is — the guardrails in `prompt.py`'s `SYSTEM`
+(recall before claiming memory, the task list stays read-only, no full
+solutions handed over) hold in every mode. One is active at a time, globally,
+like the model backend — not per-conversation — and switching takes effect on
+your very next message, no restart needed.
+
+| mode | what changes |
+|---|---|
+| `teach` | the default — nothing added, `SYSTEM` already is this |
+| `direct` | skips the hint-first pacing, answers straightforwardly with the reasoning |
+| `review` | reads what you show her like a reviewer, not a tutor — findings first |
+| `quiz` | checks understanding with small questions before explaining |
+
+`GET /api/modes` lists every mode and which one's active; `POST /api/mode`
+with `{"name": "..."}` switches it, stored in a new `settings` table — small
+global key/value config, the same shape the model backend would use if that
+ever needed to persist too. Defined in `prompt.py`'s `MODES` dict — add an
+entry for a new mode, nothing else to touch, since the set is served rather
+than hardcoded into the UI.
+
+`SYSTEM` also now recognizes pushback — resisting the hint itself ("just
+tell me", arguing with the question instead of engaging with it), not just
+being stuck — as its own signal, in any mode.
+
 ## Improving one for yourself
 
 The transcripts are the training material, and they're yours.
@@ -154,18 +181,27 @@ a cron job.
 
 ## The UI
 
-One panel, opened by the buttons in the header: **Chats** (Recent, with `+ New`),
-**↻**, **Tasks**, **Notices**, **Data**, **⏻**. A dropdown under the header on a
-desktop; a page covering the screen on a phone.
+`index.html`, at the repo root — built by hand, from scratch, not by Claude.
+Nothing here describes or dictates its structure; that's yours, and it's
+still moving. `server.py` serves whatever's there and mounts `/static` only
+if that directory exists, so a checkout with the markup mid-rewrite still
+starts — `GET /` 404s cleanly instead of crashing.
 
-The way out is **‹ Back**, top left, and it stays put while the list scrolls
-under it. There is no Close at the bottom — that's where it used to be, at the
-end of a long list you had to scroll through to escape. On a desktop the button
-that opened a panel toggles it shut and clicking away closes it, so Back only
-appears where the header is covered.
+## Editing the UI from your phone
 
-Opening a second panel replaces the first; there is never a pile of overlays to
-dismiss one at a time.
+1. On the phone, open `index.html` (or any file) on GitHub — the site works
+   fine in mobile Safari, no app needed — and use its pencil/edit icon.
+   Commit straight to `main`, or open a PR if you'd rather review on a
+   bigger screen first.
+2. Open the Sevanya web page and press restart.
+
+That's the whole loop. Restart doesn't just restart — it runs `git pull
+--ff-only` on this checkout *first*, so whatever you just committed lands on
+the PC's disk before the process comes back up serving it. If that pull
+can't fast-forward (a real conflict, or the machine's offline), nothing
+restarts and you get a 409 explaining why, rather than a restart that
+quietly didn't include your change. `SEVANYA_SKIP_PULL` turns this back into
+a plain restart, if you ever want one without touching git.
 
 Mid-conversation, `/rc` brings the web server up without leaving — started in
 the directory you're already in, so the phone sees the same files the terminal
@@ -397,6 +433,13 @@ most recent 500 so it can't grow forever in the same database as the journal.
 not at the machine. It asks first, then waits for the server to genuinely come
 back before saying so.
 
+Before any of that, it runs `lifecycle.pull_latest` — `git pull --ff-only` on
+this checkout — so a UI change committed from the phone (see above) is on
+disk before the process that's about to serve it comes back. `--ff-only`
+means it refuses rather than merging or overwriting anything: a real
+conflict, or local changes here that were never pushed, comes back as a 409
+to report, never a silent loss of work. `SEVANYA_SKIP_PULL` skips this step.
+
 `POST /api/restart` schedules an `os.execv` and returns *before* replacing the
 process: restarting inline would drop the connection mid-request, which looks
 exactly like the button not working. Same PID afterwards, since execv replaces
@@ -409,12 +452,14 @@ It requires the token when one is set — it's the only endpoint that does
 something to the machine rather than reading from it. With no token set,
 anything that can reach the port can bounce the server.
 
-The relaunch is always `python -m sevanya.server`, whatever was typed
-originally, because `python server.py` can't work — the relative imports need
-the package context that `-m` provides. cwd and the environment survive the
-exec, so `PROJECT_ROOT` and `SEVANYA_TOKEN` are the same on the other side.
-Set `SEVANYA_PORT` if 8765 isn't wanted. A reply still streaming is lost;
-conversations and the list are on disk and unaffected.
+The relaunch is always `python -m sevanya`, whatever was typed originally —
+same bootstrap the process itself started from, so a restart re-checks
+`requirements.txt` too, and a changed one takes effect without a manual
+`pip install`. `python server.py` can't work either way — the relative
+imports need the package context that `-m` provides. cwd and the environment
+survive the exec, so `PROJECT_ROOT` and `SEVANYA_TOKEN` are the same on the
+other side. Set `SEVANYA_PORT` if 8765 isn't wanted. A reply still streaming
+is lost; conversations and the list are on disk and unaffected.
 
 ## Reaching outside the machine
 
@@ -454,11 +499,12 @@ on a password prompt nobody is going to type.
 ## Layout
 
 ```
+index.html    the UI, at the repo root — server.py serves whatever's here
+static/       optional — served at /static/* if the directory exists
+manifest.json optional — served at /manifest.json if present
 sevanya/
   agent.py    the loop — send() blocks, stream() yields
   server.py   FastAPI: /api/chat (SSE) + /api/ask (Siri)
-  web/        single-page UI, installable to the iPhone home screen
-  web/static/ app icons — without them iOS uses a screenshot of the page
   tools.py    what it's allowed to do (note what's absent)
   backends.py which model answers, and the translation that allows a local one
   check.py    is the local model reachable, and does it call tools
@@ -467,12 +513,12 @@ sevanya/
   deps.py     are the requirements installed — and do they import
   push.py     sending a notification to the phone
   checkin.py  the nudge after a day of quiet
-  lifecycle.py  restarting the process, shared by the endpoint and the tool
+  lifecycle.py  restarting the process, and pulling a UI change from GitHub first
   __main__.py   `python -m sevanya` — requirements first, then the server
-  store.py    SQLite: conversations, messages, journal, task list
+  store.py    SQLite: conversations, messages, journal, task list, settings
   migrations.py  schema versioning and the drift check
   db.py       maintenance CLI: check, backup, migrate, clear-history
-  prompt.py   the teaching contract
+  prompt.py   the teaching contract, and the modes layered on top of it
   main.py     terminal REPL
 ```
 
@@ -558,25 +604,6 @@ checkpointed, the naive copy has **no tables at all**. `store.backup()` uses
 SQLite's own backup, which folds the WAL in and is safe while something else is
 writing.
 
-## A branch that is not coming back
-
-`claude/coding-ai-kd52zq` built the server and web UI in parallel with this
-one, from a common ancestor before Stage 3. Every Python change on it is
-already here in a superset — same six tools and six endpoints, plus seven more
-of each — and `server.py`, `index.html` and `manifest.json` conflict as
-add/add, because both branches wrote them from scratch. Merging it isn't a
-merge; it's choosing one of two implementations, 44 hunks at a time.
-
-It isn't wasted, though. Four things on it were better and are now here:
-
-- the transcript no longer drags you to the bottom when you've scrolled up to
-  read something mid-reply — a real bug, not a preference
-- `overscroll-behavior:none`, so iOS stops rubber-banding the page
-- the viewport lock, so tapping the input doesn't zoom the page
-- the whole panel design: Chats/Recent, Back in the header, no bottom Close
-
-**Don't merge it.** Everything worth having has been taken.
-
 ## Notes to self
 
 - `PROJECT_ROOT` is the directory you launch from. Nothing outside it is
@@ -629,15 +656,18 @@ It isn't wasted, though. Four things on it were better and are now here:
   transcript changes without this device doing anything — ask Siri something
   with the page open and it lands in the database, not in the log. Note that
   tool lines don't come back: `/api/conversations/{id}` returns text only.
-- Wire buttons with `bind(id, fn)`, not `getElementById(id).onclick`. If the
-  id doesn't match the markup, the direct form throws at the top level of the
-  script, which aborts **the rest of the script** — send stops working, the
-  transcript stops loading, the whole page goes inert over one wrong string.
-  `bind` reports the mismatch on screen and keeps binding everything else.
-- The first `<script>` block puts JS errors *in the page*. There's no console
-  on an iPhone, so a silent script death is otherwise undebuggable from the
-  device. It's a separate block because a syntax error is thrown while its own
-  script is compiling — a handler inside that script would never have run.
+- The old `sevanya/web/index.html` (now gone) wired buttons through a
+  `bind(id, fn)` helper instead of `getElementById(id).onclick`, and split
+  its script into two `<script>` blocks so a syntax error in one couldn't
+  abort the other — because a mismatched id throwing at the top level kills
+  **the rest of the script**, and there's no console on an iPhone to see it
+  happen. The hand-built `index.html` that replaced it doesn't have either
+  safeguard yet — worth carrying over once its markup settles, not before.
+- `tests/test_web.py`, which asserted the old UI's exact ids/markup/JS
+  against these two safeguards, was removed along with `sevanya/web/` rather
+  than adapted — a spec of the design it tested, not a backend contract. Its
+  id/markup-mismatch check is worth writing fresh against `index.html` once
+  that stops changing daily.
 - The **Threads** button lists `/api/conversations`, Siri's included, so the
   phone can rejoin yesterday's thread. A thread the server doesn't have any
   more (`404`) clears itself from localStorage rather than leaving you typing
@@ -645,3 +675,19 @@ It isn't wasted, though. Four things on it were better and are now here:
 - `/api/chat` with no `conversation_id` starts a **new** thread, not the latest.
   Latest would drop me into whatever Siri last asked. The browser remembers its
   own id in localStorage.
+- `tools._relative_to_root` returns `.as_posix()`, not `str()`. On Windows
+  the plain form comes back with backslashes, and that string round-trips —
+  it's what the model reads in a `grep` hit and then passes back to
+  `read_file`. A backslash in a JSON tool argument is an escape character
+  waiting to happen. One separator, on every platform.
+- `Agent._tagged` passes an already-tagged `(kind, payload)` tuple through
+  as-is instead of always wrapping in `("text", ...)`. That's what lets
+  `LocalBackend.stream()` yield `("thinking", "thinking…")` once when a
+  reasoning model's `reasoning_content` first appears — not the answer, so
+  it isn't shown as text, but silence for the 94-97% of a Qwen3 reply that's
+  thinking looks exactly like the page being frozen.
+- `index.html` lost the old `sevanya/web/`'s `manifest.json` and its three
+  icon sizes in the port — nothing to carry over because nothing on the
+  `SevanyaNewWebUI` side had replaced them yet either. "Add to Home Screen"
+  is a plain bookmark until a manifest (and `theme-color` / `apple-mobile-web-app-*`
+  meta tags) gets written for the new markup.

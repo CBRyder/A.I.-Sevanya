@@ -26,10 +26,15 @@ from pydantic import BaseModel
 
 from . import backends, checkin, deps, lifecycle, migrations, push
 from .agent import Agent
+from .prompt import DEFAULT_MODE, MODES
 from .store import CHECKIN_MARKER, Store
 from .tools import PROJECT_ROOT
 
-WEB_DIR = Path(__file__).parent / "web"
+# The UI lives at the repo root here, not in a sevanya/web/ subpackage —
+# it's built by hand, separately from everything else in this file, and this
+# just serves whatever ends up there. Nothing under WEB_DIR is written by
+# this codebase.
+WEB_DIR = Path(__file__).resolve().parent.parent
 
 # Set SEVANYA_TOKEN to require a bearer token. Over Tailscale nothing else can
 # reach this anyway, but a token costs nothing and means one misconfigured
@@ -106,7 +111,13 @@ store.trim_notifications()
 # App icons, referenced by manifest.json and the apple-touch-icon link. iOS
 # will happily "Add to Home Screen" without them and give you a blurry
 # screenshot of the page as the icon, which looks like something half-built.
-app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
+#
+# Mounted only if the directory exists — the UI here is built by hand and
+# static/ may not exist yet on a fresh checkout. Failing to mount would be a
+# missing icon; failing to *start* over a directory nobody has made yet is
+# the wrong trade.
+if (WEB_DIR / "static").is_dir():
+    app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
 
 class ChatIn(BaseModel):
@@ -123,6 +134,21 @@ def _auth(authorization: str | None) -> None:
         return
     if authorization != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="bad or missing token")
+
+
+class ModeIn(BaseModel):
+    name: str
+
+
+def _current_mode() -> str:
+    name = store.get_setting("mode", DEFAULT_MODE)
+    # Falls back rather than KeyErrors on every request if a stored value
+    # ever names a mode that's since been renamed or dropped.
+    return name if name in MODES else DEFAULT_MODE
+
+
+def _mode_extra() -> str:
+    return MODES[_current_mode()]["addendum"]
 
 
 @app.post("/api/chat")
@@ -144,7 +170,7 @@ def chat(body: ChatIn, authorization: str | None = Header(default=None)):
         # this every thread the browser starts is "(untitled)" in the picker,
         # which makes the picker useless for the one job it has.
         conversation_id = store.new_conversation(title=body.message[:60])
-    agent = Agent(store, conversation_id)
+    agent = Agent(store, conversation_id, system_extra=_mode_extra())
 
     def events():
         # Tell the client which conversation this is, so a phone that didn't
@@ -177,7 +203,9 @@ def ask(body: AskIn, authorization: str | None = Header(default=None)):
     _auth(authorization)
 
     conversation_id = store.new_conversation(title=f"siri: {body.message[:50]}")
-    agent = Agent(store, conversation_id, system_extra=SPOKEN)
+    # Mode first, brevity rule last — the voice constraint sits closest to
+    # the end of the prompt regardless of which mode is active.
+    agent = Agent(store, conversation_id, system_extra=_mode_extra() + SPOKEN)
     return {"reply": agent.send(body.message), "conversation_id": conversation_id}
 
 
@@ -197,20 +225,44 @@ def health():
 
 @app.post("/api/restart")
 def restart(authorization: str | None = Header(default=None)):
-    """Restart the server process.
+    """Pull the latest commit, then restart the server process onto it.
 
     Requires the token when one is set — this is the one endpoint that does
     something to the machine rather than reading from it. With no token set,
     anything that can reach the port can bounce the server; that's the same
     exposure as every other endpoint here, but it's worth knowing.
 
+    Editing index.html away from this machine — GitHub's own editor on a
+    phone, say — only ever changes GitHub. This is the step that gets it
+    onto disk here: a fast-forward pull, immediately before the restart that
+    serves it. If it can't fast-forward — a real conflict, or this machine
+    offline — nothing restarts. Restarting anyway would mean pressing this
+    button and getting a restart with none of what you asked for in it,
+    which is worse than the button just refusing and saying why.
+
     In-flight streams die with the old process. The client polls /api/health
     and picks its thread back up from the database, which is on disk and
     unaffected.
+
+    SEVANYA_SKIP_PULL goes back to a plain restart — for tests, or a machine
+    that was never meant to track a remote at all.
     """
     _auth(authorization)
+
+    if os.environ.get("SEVANYA_SKIP_PULL"):
+        pulled = "skipped (SEVANYA_SKIP_PULL)"
+    else:
+        ok, message = lifecycle.pull_latest(WEB_DIR)
+        if not ok:
+            store.notify("restart-failed", f"pull failed, not restarting: {message}")
+            raise HTTPException(
+                status_code=409, detail=f"pull failed, not restarting: {message}"
+            )
+        pulled = message
+
+    store.notify("restart", f"restarting — {pulled}")
     lifecycle.schedule_restart()
-    return {"restarting": True, "pid": os.getpid()}
+    return {"restarting": True, "pid": os.getpid(), "pulled": pulled}
 
 
 class ClearIn(BaseModel):
@@ -286,6 +338,43 @@ def notifications(authorization: str | None = Header(default=None)):
     return [dict(row) for row in store.notifications()]
 
 
+@app.get("/api/modes")
+def modes(authorization: str | None = Header(default=None)):
+    """How she's teaching right now, and what else she could do instead.
+
+    Unlike the task list and notifications, this isn't read-only — it's what
+    a mode picker in the UI needs: the current choice plus every option,
+    in one call.
+    """
+    _auth(authorization)
+    return {
+        "current": _current_mode(),
+        "modes": [
+            {"name": name, "label": info["label"], "description": info["description"]}
+            for name, info in MODES.items()
+        ],
+    }
+
+
+@app.post("/api/mode")
+def set_mode(body: ModeIn, authorization: str | None = Header(default=None)):
+    """Change how she teaches, globally — one active mode, like the model.
+
+    Takes effect on the next message, not this one: /api/chat builds a fresh
+    Agent per request and reads the current mode when it does, so there's
+    nothing to restart.
+    """
+    _auth(authorization)
+    if body.name not in MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no such mode {body.name!r} — have: {', '.join(MODES)}",
+        )
+    store.set_setting("mode", body.name)
+    store.notify("mode", f"switched to {body.name}")
+    return {"mode": body.name}
+
+
 @app.get("/api/tasks")
 def tasks(include_done: bool = True, authorization: str | None = Header(default=None)):
     """The task list, for reading.
@@ -341,12 +430,24 @@ def history(conversation_id: int, authorization: str | None = Header(default=Non
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "index.html")
+    path = WEB_DIR / "index.html"
+    if not path.is_file():
+        # Same reasoning as /manifest.json: while the UI is being built by
+        # hand this file may not exist yet, or may be mid-rewrite — a 404
+        # says so plainly instead of a 500 from FileResponse's stat().
+        raise HTTPException(status_code=404, detail="no index.html yet")
+    return FileResponse(path)
 
 
 @app.get("/manifest.json")
 def manifest():
-    return FileResponse(WEB_DIR / "manifest.json")
+    path = WEB_DIR / "manifest.json"
+    if not path.is_file():
+        # A missing manifest means no home-screen icon, not a broken server —
+        # a plain 404 rather than the 500 FileResponse would raise on a stat()
+        # of a path that isn't there yet.
+        raise HTTPException(status_code=404, detail="no manifest.json yet")
+    return FileResponse(path)
 
 
 def main() -> None:
