@@ -1,0 +1,13 @@
+{
+  "name": "Sevanya",
+  "short_name": "Sevanya",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#2e2e30",
+  "theme_color": "#591DA3",
+  "icons": [
+    { "src": "/static/icon192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
