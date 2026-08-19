@@ -318,7 +318,7 @@
     <!-- Chat Window -->
     <div class="chat-window">
       <textarea id="chat-input" placeholder="Type your message here..."></textarea>
-      <button onclick="sendMessage()">&lt;Send&gt;</button><button onclick="insertNewLine()">↵</button>
+      <button id="send-button" onclick="sendMessage()">Send</button><button onclick="insertNewLine()">↵</button>
     </div>
 
     <!-- Panels -->
@@ -450,10 +450,14 @@
 
     // Sends Message into the chat window
     let conversationId = Number(localStorage.getItem('conversationId')) || null;
+    let sending = false;
 
     async function sendMessage() {
       const input = document.getElementById("chat-input");
       const message = input.value.trim();
+      if (sending) return;
+      sending = true;
+      document.getElementById('send-button').disabled = true;
       if (!message) return;
 
       const chatLog = document.querySelector(".chat-log");
