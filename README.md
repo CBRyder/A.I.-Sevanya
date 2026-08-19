@@ -193,15 +193,15 @@ starts — `GET /` 404s cleanly instead of crashing.
    fine in mobile Safari, no app needed — and use its pencil/edit icon.
    Commit straight to `main`, or open a PR if you'd rather review on a
    bigger screen first.
-2. Open the Sevanya web page and press restart.
+2. Open the Sevanya web page and press pull, then press restart.
 
-That's the whole loop. Restart doesn't just restart — it runs `git pull
---ff-only` on this checkout *first*, so whatever you just committed lands on
-the PC's disk before the process comes back up serving it. If that pull
-can't fast-forward (a real conflict, or the machine's offline), nothing
-restarts and you get a 409 explaining why, rather than a restart that
-quietly didn't include your change. `SEVANYA_SKIP_PULL` turns this back into
-a plain restart, if you ever want one without touching git.
+Pull and restart are two separate buttons, on purpose — `POST /api/pull` runs
+`git pull --ff-only` on this checkout and nothing else; `POST /api/restart` is
+a plain `os.execv` and nothing else. A restart that quietly also touched the
+network was a restart that could fail for a reason the button never
+mentioned. If the pull can't fast-forward (a real conflict, or the machine's
+offline), it reports `{"ok": false, "message": ...}` instead of guessing —
+nothing's on disk yet, so there's nothing to restart into.
 
 Mid-conversation, `/rc` brings the web server up without leaving — started in
 the directory you're already in, so the phone sees the same files the terminal
@@ -427,30 +427,34 @@ and marking one read on the server would be a write to a log that only reads.
 `GET /api/notifications` is the only endpoint, and the log is trimmed to the
 most recent 500 so it can't grow forever in the same database as the journal.
 
-## Restarting it from the phone
+## Pulling and restarting from the phone
+
+Two separate endpoints, on purpose — a restart that quietly also touched the
+network was a restart that could fail for a reason the button never
+mentioned. Pull, look at what changed, then decide whether restart is next.
+
+`POST /api/pull` runs `lifecycle.pull_latest` — `git pull --ff-only` on this
+checkout — so a UI change committed from the phone (see above) actually lands
+on disk. `--ff-only` means it refuses rather than merging or overwriting
+anything: a real conflict, or local changes here that were never pushed,
+comes back as `{"ok": false, "message": ...}` to report, never a silent loss
+of work. Doesn't touch the running process either way.
 
 **⏻** in the web UI restarts the server process — for when it's wedged and I'm
 not at the machine. It asks first, then waits for the server to genuinely come
-back before saying so.
+back before saying so. `POST /api/restart` does nothing but that: no git, no
+network, just `os.execv` onto whatever's already on disk — schedules the exec
+and returns *before* replacing the process, since restarting inline would
+drop the connection mid-request, which looks exactly like the button not
+working. Same PID afterwards, since execv replaces the image rather than
+spawning a child — which is why `/api/health` reports `started`. The pid
+can't tell "it restarted" from "nothing happened"; the start time can, and
+the UI polls on it rather than on any 200, because for a moment the server
+that's about to die is still answering.
 
-Before any of that, it runs `lifecycle.pull_latest` — `git pull --ff-only` on
-this checkout — so a UI change committed from the phone (see above) is on
-disk before the process that's about to serve it comes back. `--ff-only`
-means it refuses rather than merging or overwriting anything: a real
-conflict, or local changes here that were never pushed, comes back as a 409
-to report, never a silent loss of work. `SEVANYA_SKIP_PULL` skips this step.
-
-`POST /api/restart` schedules an `os.execv` and returns *before* replacing the
-process: restarting inline would drop the connection mid-request, which looks
-exactly like the button not working. Same PID afterwards, since execv replaces
-the image rather than spawning a child — which is why `/api/health` reports
-`started`. The pid can't tell "it restarted" from "nothing happened"; the start
-time can, and the UI polls on it rather than on any 200, because for a moment
-the server that's about to die is still answering.
-
-It requires the token when one is set — it's the only endpoint that does
+Both require the token when one is set — the only two endpoints that do
 something to the machine rather than reading from it. With no token set,
-anything that can reach the port can bounce the server.
+anything that can reach the port can pull or bounce the server.
 
 The relaunch is always `python -m sevanya`, whatever was typed originally —
 same bootstrap the process itself started from, so a restart re-checks
