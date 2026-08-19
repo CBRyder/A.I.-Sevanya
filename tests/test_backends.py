@@ -270,6 +270,71 @@ def test_no_reasoning_means_no_thinking_event():
     assert pieces == ["Hi"]
 
 
+def test_inline_think_tags_are_stripped_from_content():
+    """DeepSeek-R1's distills (at least through LM Studio) don't use
+    reasoning_content -- reasoning arrives as literal <think>...</think>
+    inside `content` itself, mixed in with the real answer.
+    """
+    def handler(request):
+        return sse(
+            {"choices": [{"delta": {"content": "<think>let me consider this</think>Yes."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        )
+
+    pieces, reply = drain(local(handler).stream("system", [{"role": "user", "content": "hi"}], []))
+    assert pieces == [("thinking", "thinking…"), "Yes."]
+    assert reply.text() == "Yes."
+    assert "let me consider this" not in reply.text()
+
+
+def test_a_think_tag_split_across_chunks_is_still_recognised():
+    """Token-level streaming splits "<think>" across two or three deltas --
+    the common case, not an edge case, for this kind of model.
+    """
+    def handler(request):
+        return sse(
+            {"choices": [{"delta": {"content": "<th"}}]},
+            {"choices": [{"delta": {"content": "ink>reasoning here"}}]},
+            {"choices": [{"delta": {"content": "</th"}}]},
+            {"choices": [{"delta": {"content": "ink>The "}}]},
+            {"choices": [{"delta": {"content": "answer"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        )
+
+    pieces, reply = drain(local(handler).stream("system", [{"role": "user", "content": "hi"}], []))
+    assert ("thinking", "thinking…") in pieces
+    assert reply.text() == "The answer"
+    assert "reasoning here" not in reply.text()
+
+
+def test_text_before_a_think_block_is_still_visible():
+    """Not every reasoning model necessarily opens with <think> -- text
+    arriving before the tag must not get held back forever waiting for one.
+    """
+    def handler(request):
+        return sse(
+            {"choices": [{"delta": {"content": "Sure! <think>hmm</think> done"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        )
+
+    pieces, reply = drain(local(handler).stream("system", [{"role": "user", "content": "hi"}], []))
+    assert reply.text() == "Sure!  done"
+
+
+def test_a_think_tag_only_announces_thinking_once():
+    """Same one-signal contract as reasoning_content, for the same reason."""
+    def handler(request):
+        return sse(
+            {"choices": [{"delta": {"content": "<think>"}}]},
+            {"choices": [{"delta": {"content": "still going "}}]},
+            {"choices": [{"delta": {"content": "and going</think>done"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        )
+
+    pieces, _ = drain(local(handler).stream("system", [{"role": "user", "content": "hi"}], []))
+    assert pieces.count(("thinking", "thinking…")) == 1
+
+
 def test_streamed_tool_calls_are_reassembled_from_fragments():
     """The arguments arrive split across chunks, indexed rather than named.
 
