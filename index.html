@@ -518,10 +518,10 @@
       const aiBG = localStorage.getItem('aiChatColor');
       const youTxt = localStorage.getItem('yourTextColor');
       const aiTxt = localStorage.getItem('aiTextColor');
-      if (youBG) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-BG-color').value = you; }
-      if (aiBG) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-BG-color').value = ai; }
-      if (youTxt) {document.documentElement.style.setProperty('--yourTextColor', you); document.getElementById('your-text-color').value = you; }
-      if (aiTxt) {document.documentElement.style.setProperty('--aiTextColor', ai); document.getElementById('ai-text-color').value = ai; }
+      if (youBG) {document.documentElement.style.setProperty('--yourChatColor', you); document.getElementById('your-BG-color').value = youBG; }
+      if (aiBG) {document.documentElement.style.setProperty('--aiChatColor', ai); document.getElementById('ai-BG-color').value = aiBG; }
+      if (youTxt) {document.documentElement.style.setProperty('--yourTextColor', you); document.getElementById('your-text-color').value = youTxt; }
+      if (aiTxt) {document.documentElement.style.setProperty('--aiTextColor', ai); document.getElementById('ai-text-color').value = aiTxt; }
     })();
     
     async function restartSession() {
