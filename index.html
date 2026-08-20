@@ -368,7 +368,7 @@
       
       <!--Conversation Panel-->
       <div class="panel">
-        <div class="panel-header" onclick="openConverations">
+        <div class="panel-header" onclick="openConversations">
           <h3>Conversations</h3>
         </div>
         <div class="panel-content" id="conversations">
@@ -436,10 +436,10 @@
       input.focus();
     }
     
-    async function openComversations() {
+    async function openConversations() {
       const res = await fetch('/api/conversations');
       const list = await res.json();
-      const container = document.getElementById('conversation-list');
+      const container = document.querySelector('conversation-list');
       container.innerHTML = '';
       list.forEach(c => {
         const row = document.createElement('div');
@@ -455,7 +455,7 @@
       const messages = await res.json();
       conversationId = id;
       localStorage.setItem('conversationId', id);
-      const chatLog = document.querySelctor(".chat.log");
+      const chatLog = document.querySelector(".chat.log");
       chatLog.innerHTML = '';
       messages.forEach(m => {
         const bubble = document.createElement('div');
@@ -463,7 +463,7 @@
         bubble.innerHTML = (m.role === 'user' ? '<strong>You:</strong>' : '<strong>Sevanya:</strong> ') + m.text;
         chatLog.appendChild(bubble);
       });
-      tooglePanels();
+      togglePanels();
     }
     
     function startNewConversation() {
