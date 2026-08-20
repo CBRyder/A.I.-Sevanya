@@ -368,7 +368,7 @@
       
       <!--Conversation Panel-->
       <div class="panel">
-        <div class="panel-header" onclick="openPanel('conversations')">
+        <div class="panel-header" onclick="openConverations">
           <h3>Conversations</h3>
         </div>
         <div class="panel-content" id="conversations">
@@ -434,6 +434,20 @@
       const input = document.getElementById("chat-input");
       input.value += "\n";
       input.focus();
+    }
+    
+    async function openComversations() {
+      const res = await fetch('/api/conversations');
+      const list = await res.json();
+      const container = document.getElementById('conversation-list');
+      container.innerHTML = '';
+      list.forEach(c => {
+        const row = document.createElement('div');
+        row.textContent = c.title || ('untitled');
+        row.onclick = () => loadConversation(c.id);
+        container.appendChild(row);
+      });
+      openPanel('conversations');
     }
     
     function startNewConversation() {
