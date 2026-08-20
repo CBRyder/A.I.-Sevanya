@@ -223,46 +223,53 @@ def health():
             "backend": BACKEND}
 
 
-@app.post("/api/restart")
-def restart(authorization: str | None = Header(default=None)):
-    """Pull the latest commit, then restart the server process onto it.
+@app.post("/api/pull")
+def pull(authorization: str | None = Header(default=None)):
+    """Fast-forward this checkout from GitHub. Doesn't restart anything.
 
-    Requires the token when one is set — this is the one endpoint that does
-    something to the machine rather than reading from it. With no token set,
-    anything that can reach the port can bounce the server; that's the same
-    exposure as every other endpoint here, but it's worth knowing.
+    Requires the token when one is set — same as /api/restart, this does
+    something to the machine rather than reading from it.
 
     Editing index.html away from this machine — GitHub's own editor on a
     phone, say — only ever changes GitHub. This is the step that gets it
-    onto disk here: a fast-forward pull, immediately before the restart that
-    serves it. If it can't fast-forward — a real conflict, or this machine
-    offline — nothing restarts. Restarting anyway would mean pressing this
-    button and getting a restart with none of what you asked for in it,
-    which is worse than the button just refusing and saying why.
+    onto disk here. --ff-only refuses rather than merging or overwriting
+    anything, so a real conflict, or local changes on this machine that were
+    never pushed, comes back as ok: false with a message to explain it,
+    never a silent loss of work.
+
+    Separate from restart on purpose: pulling doesn't need the server back
+    down, and restarting doesn't need a network round-trip first. Press
+    this, look at what changed, then decide whether restart is next.
+    """
+    _auth(authorization)
+    ok, message = lifecycle.pull_latest(WEB_DIR)
+    store.notify("pull" if ok else "pull-failed", message)
+    return {"ok": ok, "message": message}
+
+
+@app.post("/api/restart")
+def restart(authorization: str | None = Header(default=None)):
+    """Restart the server process — nothing more.
+
+    Requires the token when one is set — this is the one endpoint besides
+    /api/pull that does something to the machine rather than reading from
+    it. With no token set, anything that can reach the port can bounce the
+    server; that's the same exposure as every other endpoint here, but it's
+    worth knowing.
+
+    Just execv onto whatever's already on disk. If you want a GitHub edit
+    included first, call /api/pull before this — restart doesn't do it for
+    you, on purpose: a restart that silently also touches the network is a
+    restart that can fail for a reason the button never mentioned.
 
     In-flight streams die with the old process. The client polls /api/health
     and picks its thread back up from the database, which is on disk and
     unaffected.
-
-    SEVANYA_SKIP_PULL goes back to a plain restart — for tests, or a machine
-    that was never meant to track a remote at all.
     """
     _auth(authorization)
-
-    if os.environ.get("SEVANYA_SKIP_PULL"):
-        pulled = "skipped (SEVANYA_SKIP_PULL)"
-    else:
-        ok, message = lifecycle.pull_latest(WEB_DIR)
-        if not ok:
-            store.notify("restart-failed", f"pull failed, not restarting: {message}")
-            raise HTTPException(
-                status_code=409, detail=f"pull failed, not restarting: {message}"
-            )
-        pulled = message
-
-    store.notify("restart", f"restarting — {pulled}")
+    store.notify("restart", "restarting")
     lifecycle.schedule_restart()
-    return {"restarting": True, "pid": os.getpid(), "pulled": pulled}
+    return {"restarting": True, "pid": os.getpid()}
 
 
 class ClearIn(BaseModel):

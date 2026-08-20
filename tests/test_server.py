@@ -332,7 +332,6 @@ def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch,
     client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
     called = []
     monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
-    monkeypatch.setattr(server.lifecycle, "pull_latest", lambda *a, **k: (True, "up to date"))
 
     body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
     assert body["restarting"] is True
@@ -340,55 +339,66 @@ def test_restart_schedules_the_relaunch_and_answers_first(tmp_path, monkeypatch,
     assert called == [True]
 
 
-# --- restart: pulling first -------------------------------------------------
-
-
-def test_restart_pulls_before_scheduling_the_relaunch(tmp_path, monkeypatch, blocks):
+def test_restart_does_not_touch_git(tmp_path, monkeypatch, blocks):
+    """Pulling and restarting are separate buttons now — restart is pure execv."""
     client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
-    pulled_dir = []
     monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: None)
-    monkeypatch.setattr(
-        server.lifecycle, "pull_latest",
-        lambda directory: (pulled_dir.append(directory), (True, "Fast-forward to abc123"))[1],
-    )
-
-    body = client.post("/api/restart", headers={"Authorization": "Bearer secret"}).json()
-    assert pulled_dir == [server.WEB_DIR], "restart must pull the repo it actually serves from"
-    assert body["pulled"] == "Fast-forward to abc123"
-
-
-def test_a_failed_pull_refuses_to_restart(tmp_path, monkeypatch, blocks):
-    """An unrelated restart on stale code isn't what pressing this asked for."""
-    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
-    called = []
-    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
-    monkeypatch.setattr(
-        server.lifecycle, "pull_latest",
-        lambda *a, **k: (False, "CONFLICT (content): Merge conflict in index.html"),
-    )
-
-    res = client.post("/api/restart", headers={"Authorization": "Bearer secret"})
-    assert res.status_code == 409
-    assert not called, "a refused pull must not restart on the old code anyway"
-
-    kinds = [n["kind"] for n in client.get("/api/notifications", headers={"Authorization": "Bearer secret"}).json()]
-    assert "restart-failed" in kinds
-
-
-def test_skip_pull_env_var_goes_straight_to_a_plain_restart(tmp_path, monkeypatch, blocks):
-    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
-    called = []
-    monkeypatch.setenv("SEVANYA_SKIP_PULL", "1")
-    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: called.append(True))
 
     def fail_if_called(*a, **k):
-        raise AssertionError("pull_latest must not run when SEVANYA_SKIP_PULL is set")
+        raise AssertionError("restart must not call pull_latest")
 
     monkeypatch.setattr(server.lifecycle, "pull_latest", fail_if_called)
 
     res = client.post("/api/restart", headers={"Authorization": "Bearer secret"})
     assert res.status_code == 200
-    assert called == [True]
+
+
+# --- pull --------------------------------------------------------------
+
+
+def test_pull_requires_the_token_when_one_is_set(tmp_path, monkeypatch, blocks):
+    """Same exposure as restart — this does something to the machine too."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    called = []
+    monkeypatch.setattr(server.lifecycle, "pull_latest", lambda *a, **k: called.append(True))
+
+    assert client.post("/api/pull").status_code == 401
+    assert client.post("/api/pull", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert not called, "an unauthorised request must not have pulled anything"
+
+
+def test_pull_fast_forwards_and_does_not_restart(tmp_path, monkeypatch, blocks):
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    pulled_dir = []
+    restarted = []
+    monkeypatch.setattr(server.lifecycle, "schedule_restart", lambda *a, **k: restarted.append(True))
+    monkeypatch.setattr(
+        server.lifecycle, "pull_latest",
+        lambda directory: (pulled_dir.append(directory), (True, "Fast-forward to abc123"))[1],
+    )
+
+    body = client.post("/api/pull", headers={"Authorization": "Bearer secret"}).json()
+    assert pulled_dir == [server.WEB_DIR], "pull must target the repo it actually serves from"
+    assert body == {"ok": True, "message": "Fast-forward to abc123"}
+    assert not restarted, "pulling on its own must not also restart the process"
+
+    kinds = [n["kind"] for n in client.get("/api/notifications", headers={"Authorization": "Bearer secret"}).json()]
+    assert "pull" in kinds
+
+
+def test_a_failed_pull_reports_ok_false(tmp_path, monkeypatch, blocks):
+    """A conflict is something to look at, not a 500 — the button reads the message."""
+    client, server = build(tmp_path, monkeypatch, answer(blocks), token="secret")
+    monkeypatch.setattr(
+        server.lifecycle, "pull_latest",
+        lambda *a, **k: (False, "CONFLICT (content): Merge conflict in index.html"),
+    )
+
+    body = client.post("/api/pull", headers={"Authorization": "Bearer secret"}).json()
+    assert body == {"ok": False, "message": "CONFLICT (content): Merge conflict in index.html"}
+
+    kinds = [n["kind"] for n in client.get("/api/notifications", headers={"Authorization": "Bearer secret"}).json()]
+    assert "pull-failed" in kinds
 
 
 def test_the_relaunch_uses_the_module_entry_point(tmp_path, monkeypatch, blocks):
