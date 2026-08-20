@@ -444,7 +444,7 @@
       list.forEach(c => {
         const row = document.createElement('div');
         row.textContent = c.title || ('untitled');
-        row.onclick = () => "loadConversation(c.id)";
+        row.onclick = () => loadConversation(c.id);
         container.appendChild(row);
       });
       openPanel('conversations');
@@ -640,6 +640,16 @@
         }
       }
       alert('Server did not come back within 20s. Check the machine the server runs on.')
+    }
+
+    async function pullGithub() {
+      const res = await fetch('/api/pull', { method: 'POST' });
+      const body = await res.json();
+      if (body.ok) {
+        alert('Pulled: ' + body.message);
+      } else {
+        alert('Pull failed: ' + body.message);
+      }
     }
 
     async function getStarted() {
