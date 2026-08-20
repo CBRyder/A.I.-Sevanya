@@ -434,6 +434,12 @@
       input.focus();
     }
     
+    function startNewConversation {
+      conversationId = null;
+      localStorage.removeItem('conversationId');
+      document.querySelector(".chat-log").innerHTML = "";
+    }
+    
     function updateProfileField(key, value) {
       localStorage.setItem(key, value);
     }
@@ -461,8 +467,8 @@
 
     // Sends Message into the chat window
     let conversationId = Number(localStorage.getItem('conversationId')) || null;
-        let sending = false;
-    let messageQueue = [];
+      let sending = false;
+        let messageQueue = [];
 
     function sendMessage() {
       const input = document.getElementById("chat-input");
