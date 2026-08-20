@@ -259,7 +259,7 @@
       cursor: pointer;
     }
 
-    /*Full-screen panel on mobile*/
+    /*Mobile*/
     @media (max-width: 600px) {
       .panels {
         display: none;
@@ -439,12 +439,12 @@
     async function openConversations() {
       const res = await fetch('/api/conversations');
       const list = await res.json();
-      const container = document.querySelector('conversation-list');
+      const container = document.querySelector('.conversation-list');
       container.innerHTML = '';
       list.forEach(c => {
         const row = document.createElement('div');
         row.textContent = c.title || ('untitled');
-        row.onclick = () => loadConversation(c.id);
+        row.onclick = () => "loadConversation(c.id)";
         container.appendChild(row);
       });
       openPanel('conversations');
@@ -455,7 +455,7 @@
       const messages = await res.json();
       conversationId = id;
       localStorage.setItem('conversationId', id);
-      const chatLog = document.querySelector(".chat.log");
+      const chatLog = document.querySelector(".chat-log");
       chatLog.innerHTML = '';
       messages.forEach(m => {
         const bubble = document.createElement('div');
