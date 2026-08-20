@@ -455,10 +455,11 @@
     async function sendMessage() {
       const input = document.getElementById("chat-input");
       const message = input.value.trim();
+      if (!message) return;
+      
       if (sending) return;
       sending = true;
       document.getElementById('send-button').disabled = true;
-      if (!message) return;
 
       const chatLog = document.querySelector(".chat-log");
       chatLog.innerHTML += `<div class="msg-you"><strong>You:</strong> ${message}</div><br>`;
@@ -526,6 +527,8 @@
       }
     }
   } catch (err) {
+      sending = fals;
+      document.getElementById('sned-button').disabled = fals;
     chatLog.innerHTML += `<div class="msg-error">${err}</div>`;
   }
 
