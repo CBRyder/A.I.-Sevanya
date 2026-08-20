@@ -528,13 +528,13 @@
     }
   } catch (err) {
     chatLog.innerHTML += `<div class="msg-error">${err}</div>`;
-  }
-
-  chatLog.scrollTop = chatLog.scrollHeight;
-} finally {
+  } finally {
       sending = false;
       document.getElementById('send-button').disabled = false;
   }
+
+  chatLog.scrollTop = chatLog.scrollHeight;
+} 
 
     
     function updateMessageColor(who, type, color) {
