@@ -527,13 +527,14 @@
       }
     }
   } catch (err) {
-      sending = fals;
-      document.getElementById('sned-button').disabled = fals;
     chatLog.innerHTML += `<div class="msg-error">${err}</div>`;
   }
 
   chatLog.scrollTop = chatLog.scrollHeight;
-}
+} finally {
+      sending = false;
+      document.getElementById('send-button').disabled = false;
+  }
 
     
     function updateMessageColor(who, type, color) {
