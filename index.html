@@ -450,6 +450,22 @@
       openPanel('conversations');
     }
     
+    async function loadConversation(id) {
+      const res = await fetch('/api/conversations/' + id);
+      const messages = await res.json();
+      conversationId = id;
+      localStorage.setItem('conversationId', id);
+      const chatLog = document.querySelctor(".chat.log");
+      chatLog.innerHTML = '';
+      messages.forEach(m => {
+        const bubble = document.createElement('div');
+        bubble.className = m.role === 'user' ? 'msg-you' : 'msg-ai';
+        bubble.innerHTML = (m.role === 'user' ? '<strong>You:</strong>' : '<strong>Sevanya:</strong> ') + m.text;
+        chatLog.appendChild(bubble);
+      });
+      tooglePanels();
+    }
+    
     function startNewConversation() {
       conversationId = null;
       localStorage.removeItem('conversationId');
