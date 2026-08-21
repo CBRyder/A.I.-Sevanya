@@ -387,13 +387,11 @@
           <span class="status" id="ai-status">checking…</span>
         </div>
       </div>
-
       
       <!-- Task List Panel -->
       <div class="panel">
         <div class="panel-header" onclick="openPanel('task-list')">
           <h3>Task List</h3>
-        
         </div>
         <div class="panel-content" id="task-list">
           <p class="panel-description">What me and her Agree needs worked on</p>
@@ -434,7 +432,6 @@
       <div class="panel">
         <div class="panel-header" onclick="openPanel('settings')">
           <h3>Settings</h3>
-          
         </div>
         <div class="panel-content" id="settings">
           <label>Your Message Background: <input type="color" id="your-BG-color" value="#591DA3" oninput="updateMessageColor('your', this.value)"></label><br>
@@ -449,10 +446,9 @@
       <div class="panel">
         <div class="panel-header" onclick="openPanel('serversettings')">
           <h3>Server Settings</h3>
-          
         </div>
         <div class="panel-content" id="serversettings">
-          <p><button onclick="restartSession()">⏻ Restart server</button> Restart Server, from the PC</p>
+          <p><button onclick="restartSession()">⏻ Restart Server</button> Restart Server, from the PC</p>
           <p><button onclick="pullGithub()">«Pull Github»</button> Pull Github Repo from Github</p>
         </div>
       </div>
@@ -481,7 +477,6 @@
       panels.forEach(panel => {
         panel.classList.remove("active");
       });
-
       if (!wasActive) {
         selectedPanel.classList.add("active");
       }
