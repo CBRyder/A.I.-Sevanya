@@ -465,8 +465,10 @@
       panels.forEach(panel => {
         panel.classList.remove("active");
       });
-      const selectedPanel = document.getElementById(panelId);
-      selectedPanel.classList.add("active");
+
+      if (!wasActive) {
+        selectedPanel.classList.add("active");
+      }
       
       document.querySelector(".panels").classList.add("active");
     }
