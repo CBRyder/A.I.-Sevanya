@@ -209,6 +209,13 @@
       border-radius: 5px;
     }
 
+    .panel.sticky {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--backgroundC);
+    }
+      
     .panel-header {
       display: flex;
       justify-content: space-between;
@@ -372,7 +379,7 @@
           <h3>Conversations</h3>
         </div>
         <div class="panel-content" id="conversations">
-          <div class="main-menu">
+          <div class="main-menu panel-sticky">
             <p><button onclick="startNewConversation()">+ New +</button> Start a New Conversation</p>
           </div>
           <div class="conversation-list"></div>
