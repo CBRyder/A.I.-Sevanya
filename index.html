@@ -713,6 +713,7 @@
       const ok = await pullGithub();
       if(!ok) return;
       await restartSession();
+    }
 
     async function getStarted() {
       try {
