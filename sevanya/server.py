@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import backends, checkin, deps, lifecycle, migrations, push
+from . import backends, checkin, deps, lifecycle, migrations, push, titling
 from .agent import Agent
 from .prompt import DEFAULT_MODE, MODES
 from .store import CHECKIN_MARKER, Store
@@ -166,10 +166,10 @@ def chat(body: ChatIn, authorization: str | None = Header(default=None)):
     # remembers its own conversation id instead (localStorage) and sends it.
     conversation_id = body.conversation_id
     if conversation_id is None:
-        # Title it from the opening message, the way the REPL does. Without
-        # this every thread the browser starts is "(untitled)" in the picker,
-        # which makes the picker useless for the one job it has.
-        conversation_id = store.new_conversation(title=body.message[:60])
+        # A generated title, not a truncated one — titling.generate() falls
+        # back to the raw message itself if the model call fails, so this
+        # never blocks starting the conversation on the naming succeeding.
+        conversation_id = store.new_conversation(title=titling.generate(body.message))
     agent = Agent(store, conversation_id, system_extra=_mode_extra())
 
     def events():
@@ -202,7 +202,7 @@ def ask(body: AskIn, authorization: str | None = Header(default=None)):
     """
     _auth(authorization)
 
-    conversation_id = store.new_conversation(title=f"siri: {body.message[:50]}")
+    conversation_id = store.new_conversation(title=f"siri: {titling.generate(body.message)}")
     # Mode first, brevity rule last — the voice constraint sits closest to
     # the end of the prompt regardless of which mode is active.
     agent = Agent(store, conversation_id, system_extra=_mode_extra() + SPOKEN)

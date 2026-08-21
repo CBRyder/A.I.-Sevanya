@@ -92,11 +92,11 @@ def test_chat_without_an_id_starts_a_new_thread_not_the_latest(tmp_path, monkeyp
 
 
 def test_chat_titles_the_thread_it_creates(tmp_path, monkeypatch, blocks):
-    """Otherwise the thread picker is a list of "(untitled)"."""
-    client, _ = build(tmp_path, monkeypatch, answer(blocks))
+    """A generated name now, not the raw opening line -- see titling.py."""
+    client, _ = build(tmp_path, monkeypatch, answer(blocks, "Parser segfault debugging"))
     client.post("/api/chat", json={"message": "why is my parser segfaulting?"})
     listed = client.get("/api/conversations").json()
-    assert listed[0]["title"].startswith("why is my parser")
+    assert listed[0]["title"] == "Parser segfault debugging"
 
 
 def test_chat_reports_errors_as_events_rather_than_dying(tmp_path, monkeypatch, blocks):
