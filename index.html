@@ -448,6 +448,7 @@
           <h3>Server Settings</h3>
         </div>
         <div class="panel-content" id="serversettings">
+          <p><button onclick="pullAndRestart()">⏻ Pull &amp; Restart Server</button> Pull the latest from Github, then Restarts</p>
           <p><button onclick="restartSession()">⏻ Restart Server</button> Restart Server, from the PC</p>
           <p><button onclick="pullGithub()">«Pull Github»</button> Pull Github Repo from Github</p>
         </div>
@@ -705,7 +706,13 @@
       } else {
         alert('Pull failed: ' + body.message);
       }
+      return body.ok;
     }
+
+    async function pullAndRestart() {
+      const ok = await pullGithub();
+      if(!ok) return;
+      await restartSession();
 
     async function getStarted() {
       try {
