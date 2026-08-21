@@ -208,13 +208,6 @@
       border: 1px solid var(--fillC);
       border-radius: 5px;
     }
-
-    .panel.sticky {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: var(--backgroundC);
-    }
       
     .panel-header {
       display: flex;
@@ -265,10 +258,17 @@
       font-size: 1rem;
       cursor: pointer;
     }
+    
+    .panel.sticky {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--backgroundC);
+    }
 
     .conversation-row {
       background: var(--backgroundC);
-      border: 1px solid var(fillC);
+      border: 1px solid var(--fillC);
       border-radius: 5px;
       padding: 0.5rem 1rem;
       margin-bottom: 0.5rem;
