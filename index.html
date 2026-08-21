@@ -266,6 +266,19 @@
       cursor: pointer;
     }
 
+    .conversation-row {
+      background: var(--backgroundC);
+      border: 1px solid var(fillC);
+      border-radius: 5px;
+      padding: 0.5rem 1rem;
+      margin-bottom: 0.5rem;
+      cursor: pointer;
+    }
+
+    .conversation-row:hover {
+      background: var(--highlightC);
+    }
+
     /*Mobile*/
     @media (max-width: 600px) {
       .panels {
@@ -452,6 +465,7 @@
       container.innerHTML = '';
       list.forEach(c => {
         const row = document.createElement('div');
+        row.className = 'conversation-row';
         row.textContent = c.title || ('untitled');
         row.onclick = () => loadConversation(c.id);
         container.appendChild(row);
