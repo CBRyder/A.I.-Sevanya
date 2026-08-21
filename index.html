@@ -461,7 +461,11 @@
 
     // Show Panels
     function openPanel(panelId) {
+      
+      const selectedPanel = document.getElementById(panelId);
+      const wasActive = selectedPanel.classList.contains("active");
       const panels = document.querySelectorAll(".panel-content");
+      
       panels.forEach(panel => {
         panel.classList.remove("active");
       });
