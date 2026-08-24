@@ -23,7 +23,7 @@ from _collections_abc import Callable
 
 # Bumped by adding to MIGRATIONS. A fresh database is stamped with this
 # straight away, because SCHEMA already builds the current shape.
-LATEST = 4
+LATEST = 5
 
 
 class SchemaMismatch(RuntimeError):
@@ -38,7 +38,7 @@ EXPECTED = {
     "conversations": {"id", "title", "kind", "created_at", "updated_at"},
     "messages": {"id", "conversation_id", "role", "content", "model", "created_at"},
     "journal": {"id", "topic", "note", "conversation_id", "created_at"},
-    "task_list": {"id", "task", "done", "conversation_id", "created_at", "completed_at"},
+    "task_list": {"id", "task", "done", "origin", "conversation_id", "created_at", "completed_at"},
     "notifications": {"id", "kind", "message", "created_at"},
     "settings": {"key", "value"},
 }
@@ -88,10 +88,27 @@ def _add_settings_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_task_origin(conn: sqlite3.Connection) -> None:
+    """Where a task came from — her own noticing, or something you said.
+
+    The list stays single-writer — only she ever calls add_task — but it can
+    now say why something's on it: 'her' (she noticed it, unprompted), 'you'
+    (you said you needed to do it and she agreed it was worth tracking), or
+    'agreed' (a genuine back-and-forth, not just one side stating it).
+
+    Every existing row predates this column and was, by the old rule, the
+    only kind that could exist — so 'her' is the correct backfill, not a
+    guess standing in for missing data the way NULL would be elsewhere in
+    this file.
+    """
+    add_column(conn, "task_list", "origin", "TEXT NOT NULL DEFAULT 'her'")
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (2, "messages.model — which model wrote each turn", _add_message_model),
     (3, "conversations.kind — yours, or an errand she ran", _add_conversation_kind),
     (4, "settings — key/value, currently just the active mode", _add_settings_table),
+    (5, "task_list.origin — her, you, or agreed", _add_task_origin),
 ]
 
 

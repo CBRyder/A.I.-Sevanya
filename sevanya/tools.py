@@ -263,13 +263,22 @@ TOOLS = [
         "name": "add_task",
         "description": (
             "Put something on the list you keep for this person. The list is "
-            "yours, not theirs — you decide what goes on it. Use it when you "
-            "notice something they should do and this conversation isn't when "
-            "they'll do it: a gap worth closing, a concept worth practising, a "
-            "fix you spotted in their code, something to come back to with "
-            "fresh eyes. It is not a transcript of things they said they'd do; "
-            "if it were, they could keep it themselves. Open tasks are shown "
-            "to you at the start of every conversation, which is what makes "
+            "yours, not theirs — you decide what goes on it, and you decide "
+            "whether something is worth tracking at all. Three reasons "
+            "something ends up here, and origin says which: 'her' is you "
+            "noticing something unprompted — a gap worth closing, a concept "
+            "worth practising, a fix you spotted, something to revisit with "
+            "fresh eyes. 'you' is a first-person statement of intent — 'I "
+            "need to fix the parser', 'I should', 'I'm going to' — in that "
+            "phrasing or close to it. Track it on the phrasing alone, not "
+            "your opinion of whether it matters; the point is they might "
+            "forget saying it, and if you're unsure it counts, add it anyway "
+            "and let a later 'did you end up doing that' be the check, which "
+            "costs nothing if the answer is 'never mind'. 'agreed' "
+            "is for the two of you actually discussing it and landing on it "
+            "together, not one side just announcing it. Whichever it is, "
+            "being specific is what makes it useful. Open tasks are shown to "
+            "you at the start of every conversation, which is what makes "
             "this the way something survives until it's done. One per call, "
             "and few — a long list is one they stop reading."
         ),
@@ -279,7 +288,19 @@ TOOLS = [
                 "task": {
                     "type": "string",
                     "description": "What they should do, specific enough to act on, e.g. 'rewrite the parser loop without the flag variable'",
-                }
+                },
+                "origin": {
+                    "type": "string",
+                    "enum": ["her", "you", "agreed"],
+                    "description": (
+                        "Where this came from: 'her' if you noticed it yourself, "
+                        "'you' for a first-person statement of intent ('I need "
+                        "to', 'I should', 'I'm going to') — track the phrasing, "
+                        "not your judgment of whether it matters — "
+                        "'agreed' if you both actually settled on it together. "
+                        "Defaults to 'her' if left out."
+                    ),
+                },
             },
             "required": ["task"],
         },
@@ -702,16 +723,29 @@ def reload(install: bool = True, *, store, conversation_id) -> str:
 # Writes, like the journal — to Sevanya's own database, never to your source.
 
 
+TASK_ORIGINS = ("her", "you", "agreed")
+
+
 def _task_line(row) -> str:
     mark = "x" if row["done"] else " "
-    return f"  [{mark}] {row['id']}. {row['task']}"
+    # "her" is the common case and the one that needs no explanation — it's
+    # what every task meant before origin existed. Only tag the other two,
+    # so the list doesn't read "(her)" on every single line.
+    tag = f" ({row['origin']})" if row["origin"] != "her" else ""
+    return f"  [{mark}] {row['id']}. {row['task']}{tag}"
 
 
-def add_task(task: str, *, store, conversation_id) -> str:
+def add_task(task: str, origin: str = "her", *, store, conversation_id) -> str:
     task = task.strip()
     if not task:
         return "nothing to add — the task was empty"
-    task_id = store.add_task(task, conversation_id)
+    # A schema enum is a hint, not an enforcement — a model can still send
+    # anything as a string. Falling back to "her" rather than storing junk
+    # keeps a typo'd origin from becoming a fourth, unrecognised category the
+    # UI has no way to render.
+    if origin not in TASK_ORIGINS:
+        origin = "her"
+    task_id = store.add_task(task, conversation_id, origin=origin)
     # Hand back the id, since completing or removing it later needs one.
     return f"added task {task_id}: {task}"
 

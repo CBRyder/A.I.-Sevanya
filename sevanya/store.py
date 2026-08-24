@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS task_list (
     id              INTEGER PRIMARY KEY,
     task            TEXT NOT NULL,
     done            INTEGER NOT NULL DEFAULT 0,
+    origin          TEXT NOT NULL DEFAULT 'her',
     conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at    TEXT
@@ -338,17 +339,18 @@ class Store:
     # CREATE TABLE IF NOT EXISTS means an existing ~/.sevanya/sevanya.db picks
     # this up the next time Sevanya starts. There's no migration to run.
 
-    def add_task(self, task: str, conversation_id: int | None = None) -> int:
+    def add_task(self, task: str, conversation_id: int | None = None,
+                 origin: str = "her") -> int:
         cur = self.db.execute(
-            "INSERT INTO task_list (task, conversation_id) VALUES (?, ?)",
-            (task, conversation_id),
+            "INSERT INTO task_list (task, conversation_id, origin) VALUES (?, ?, ?)",
+            (task, conversation_id, origin),
         )
         self.db.commit()
         return cur.lastrowid
 
     def get_task(self, task_id: int) -> sqlite3.Row | None:
         return self.db.execute(
-            "SELECT id, task, done, created_at, completed_at FROM task_list WHERE id = ?",
+            "SELECT id, task, done, origin, created_at, completed_at FROM task_list WHERE id = ?",
             (task_id,),
         ).fetchone()
 
@@ -383,7 +385,7 @@ class Store:
         """Open tasks oldest first — the order you'd work through them."""
         where = "" if include_done else "WHERE done = 0"
         return self.db.execute(
-            f"""SELECT id, task, done, created_at, completed_at FROM task_list
+            f"""SELECT id, task, done, origin, created_at, completed_at FROM task_list
                 {where} ORDER BY done, id LIMIT ?""",
             (limit,),
         ).fetchall()
@@ -394,7 +396,7 @@ class Store:
         # formats one can format the other. sqlite3.Row raises on a missing
         # column, so a narrower select turns a shared helper into a crash.
         return self.db.execute(
-            """SELECT id, task, done, created_at FROM task_list
+            """SELECT id, task, done, origin, created_at FROM task_list
                WHERE done = 0 ORDER BY id LIMIT ?""",
             (limit,),
         ).fetchall()

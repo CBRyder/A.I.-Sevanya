@@ -36,6 +36,43 @@ def test_a_task_survives_and_comes_back_open(store):
     assert row["completed_at"] is None
 
 
+# --- origin: her, you, agreed -----------------------------------------------
+
+
+def test_a_tasks_origin_defaults_to_her(store):
+    """Every task before origin existed was, by the old rule, this kind."""
+    task_id = store.add_task("write the iOS Shortcut")
+    assert store.get_task(task_id)["origin"] == "her"
+
+
+def test_an_origin_can_be_given_explicitly(store):
+    task_id = store.add_task("fix the parser", origin="you")
+    assert store.get_task(task_id)["origin"] == "you"
+
+
+def test_an_invalid_origin_from_the_model_falls_back_to_her(call):
+    """A schema enum is a hint, not an enforcement -- guard it in code too."""
+    out, is_error = call("add_task", task="something", origin="not-a-real-origin")
+    assert not is_error
+    assert "1" in out
+
+
+def test_the_fallback_actually_lands_in_the_row(call, store):
+    call("add_task", task="something", origin="not-a-real-origin")
+    assert store.list_tasks()[0]["origin"] == "her"
+
+
+def test_a_non_her_origin_is_tagged_in_the_listing(call):
+    call("add_task", task="fix the parser", origin="you")
+    call("add_task", task="ship the release", origin="agreed")
+    call("add_task", task="noticed on my own")
+    out, _ = call("list_tasks")
+    assert "1. fix the parser (you)" in out
+    assert "2. ship the release (agreed)" in out
+    # "her" is the unmarked default -- tagging every line would be noise.
+    assert "3. noticed on my own" in out and "(her)" not in out
+
+
 def test_completing_stamps_the_time(store):
     task_id = store.add_task("read the streaming code")
     assert store.complete_task(task_id)
