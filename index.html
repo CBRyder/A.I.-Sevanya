@@ -747,6 +747,15 @@
         this.value += "\n"; //new line
       }
     });
+
+    //clicking outside of the panel behavior
+    document.addEventListener('click', function (e) {
+      const panels = document.querySelector('.panels');
+      if (!panels.classList.contains('active')) return;  //nothing open, nothing to do
+      if (panels.contains(e.target)) return;  //click inside the panel
+      if (e.target.closest('.main-menu')) return;  //the ☰ button
+      togglePanels();
+    });
  
   </script>
 </body>
