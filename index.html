@@ -570,8 +570,8 @@
       const chatLog = document.querySelector(".chat-log");
       const you = document.createElement('div');
       you.className = 'msg-you';
-      const queuedLabel = sending ? '<span class="queue-label">…Queue…</span> ' : '';
-      you.innerHTML = '<strong>You:</strong> ' + queuedLabel + message;
+      const queuedLabel = sending ? ' <span class="queue-label">…Queue…</span>' : '';
+      you.innerHTML = '<strong>You:</strong> ' + message + queuedLabel;
       chatLog.appendChild(you);
       chatLog.appendChild(document.createElement('br'));
       input.value = "";
